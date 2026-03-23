@@ -8,6 +8,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Code, Smartphone, Globe, Upload, CheckCircle, GitBranch, Loader2, ChevronDown, ChevronUp, AlertTriangle, Info } from "lucide-react";
 import { InfoTooltip } from "@/components/InfoTooltip";
 import { useToast } from "@/hooks/use-toast";
@@ -50,11 +51,14 @@ export function NewAppWorkflowDialog({ open, onOpenChange, defaultAppType, hideT
   // Common fields
   const [projectName, setProjectName] = useState("");
   
-  // MVP deployment fields (App Store destination)
-  const [mvpTargetStore, setMvpTargetStore] = useState<"ios" | "android">("ios");
+  // MVP deployment (optional): none = scan only; ios/android = store; web = deploy URL
+  const [mvpDeployKind, setMvpDeployKind] = useState<"none" | "ios" | "android" | "web">("none");
   const [mvpBundleId, setMvpBundleId] = useState("");
+  const [mvpWebDeployUrl, setMvpWebDeployUrl] = useState("");
   const [mvpTechStack, setMvpTechStack] = useState("");
   const [mvpCloudInfra, setMvpCloudInfra] = useState("");
+  const [mvpSecurityModules, setMvpSecurityModules] = useState<string[]>(["SAST", "SCA", "Secrets"]);
+  const [workflowAdvancedOpen, setWorkflowAdvancedOpen] = useState(false);
   
   // Mobile fields
   const [mobileAppName, setMobileAppName] = useState("");
@@ -77,6 +81,7 @@ export function NewAppWorkflowDialog({ open, onOpenChange, defaultAppType, hideT
   const [webAuthApiKey, setWebAuthApiKey] = useState("");
   const [webAuthTokenHeader, setWebAuthTokenHeader] = useState("Authorization");
   const [webSecurityModules, setWebSecurityModules] = useState<string[]>(["SAST", "DAST"]);
+  const [mobileSecurityModules, setMobileSecurityModules] = useState<string[]>(["SAST", "SCA", "Secrets"]);
 
   // Scan results
   const [scanResults, setScanResults] = useState({
@@ -221,78 +226,87 @@ export function NewAppWorkflowDialog({ open, onOpenChange, defaultAppType, hideT
     },
   });
 
-  const handleStartScan = () => {
-    // Validate common fields
-    if (!projectName && !mobileAppName && !webAppName) {
-      toast({
-        title: "Missing Information",
-        description: "Please provide app/project name",
-        variant: "destructive",
-      });
-      return;
-    }
+  const branchNormalized = branch.trim() || "main";
 
-    if (!repositoryUrl) {
-      toast({
-        title: "Missing Information",
-        description: "Please provide repository URL",
-        variant: "destructive",
-      });
-      return;
-    }
-
-    // Validate app-specific fields
+  const getUploadDestinationDisplay = () => {
     if (appType === "mvp") {
-      if (!mvpBundleId) {
-        toast({
-          title: "Missing Information",
-          description: "Please provide the target App Store bundle/package ID",
-          variant: "destructive",
-        });
-        return;
+      if (mvpDeployKind === "web" && mvpWebDeployUrl.trim()) return `Web: ${mvpWebDeployUrl.trim()}`;
+      if (mvpDeployKind === "ios" || mvpDeployKind === "android") {
+        return `${mvpDeployKind === "ios" ? "iOS" : "Android"} App Store (${mvpBundleId || "bundle TBD"})`;
       }
-      if (!mvpTechStack) {
-        toast({
-          title: "Missing Information",
-          description: "Please provide the tech stack",
-          variant: "destructive",
-        });
-        return;
-      }
+      return repositoryUrl.trim() ? `Repository: ${repositoryUrl.trim()}` : "Scan only (no deploy target)";
     }
     if (appType === "mobile") {
-      if (!mobileAppId) {
-        toast({
-          title: "Missing Information",
-          description: "Please provide bundle/package ID",
-          variant: "destructive",
-        });
+      return `${mobilePlatform === "ios" ? "iOS" : "Android"} App Store (${mobileAppId})`;
+    }
+    return webDomainUrl.trim() || "Web app";
+  };
+
+  const getUploadDestinationShortLabel = () => {
+    if (appType === "mvp") {
+      if (mvpDeployKind === "web") return "Web URL";
+      if (mvpDeployKind === "ios") return "iOS App Store";
+      if (mvpDeployKind === "android") return "Google Play Store";
+      return "repository";
+    }
+    if (appType === "mobile") {
+      return mobilePlatform === "ios" ? "iOS App Store" : "Google Play Store";
+    }
+    return "production server";
+  };
+
+  const handleStartScan = () => {
+    if (appType === "mvp") {
+      if (!projectName.trim()) {
+        toast({ title: "Missing Information", description: "Please provide a project name", variant: "destructive" });
         return;
       }
-      if (!mobileVersion) {
+      if (!repositoryUrl.trim()) {
+        toast({ title: "Missing Information", description: "Please provide a repository URL to scan", variant: "destructive" });
+        return;
+      }
+      if (mvpDeployKind === "ios" || mvpDeployKind === "android") {
+        if (!mvpBundleId.trim()) {
+          toast({
+            title: "Missing Information",
+            description: "Provide a bundle ID / package name for the selected store, or set deployment to Scan only or Web.",
+            variant: "destructive",
+          });
+          return;
+        }
+      }
+      if (mvpDeployKind === "web" && !mvpWebDeployUrl.trim()) {
         toast({
           title: "Missing Information",
-          description: "Please provide version number",
+          description: "Provide a web deployment URL or choose a different deployment option.",
           variant: "destructive",
         });
         return;
       }
     }
-    if (appType === "web") {
-      if (!webDomainUrl) {
+
+    if (appType === "mobile") {
+      if (!mobileAppName.trim()) {
+        toast({ title: "Missing Information", description: "Please provide an app name", variant: "destructive" });
+        return;
+      }
+      if (!mobileAppId.trim() || !mobileVersion.trim()) {
         toast({
           title: "Missing Information",
-          description: "Please provide live domain URL",
+          description: "Please provide bundle/package ID and version",
           variant: "destructive",
         });
         return;
       }
-      if (webSecurityModules.length === 0) {
-        toast({
-          title: "Missing Information",
-          description: "Please select at least one security module",
-          variant: "destructive",
-        });
+    }
+
+    if (appType === "web") {
+      if (!webAppName.trim()) {
+        toast({ title: "Missing Information", description: "Please provide an app name", variant: "destructive" });
+        return;
+      }
+      if (!webDomainUrl.trim()) {
+        toast({ title: "Missing Information", description: "Please provide the live domain URL to scan", variant: "destructive" });
         return;
       }
       if (webAuthRequired) {
@@ -328,99 +342,129 @@ export function NewAppWorkflowDialog({ open, onOpenChange, defaultAppType, hideT
     }
 
     setScanStatus("scanning");
-    
-    // Prepare scan data
-    const scanData = appType === "mvp" 
-      ? { 
-          projectName, 
-          repositoryUrl, 
-          platform: sourceRepo,
-          branch,
-          targetAppStore: mvpTargetStore,
-          appStoreBundleId: mvpBundleId
-        }
-      : appType === "mobile"
-      ? { 
-          appName: mobileAppName, 
-          platform: mobilePlatform, 
-          appId: mobileAppId,
-          version: mobileVersion
-        }
-      : { 
-          appName: webAppName, 
-          appUrl: webDomainUrl,
-          hostingPlatform: webCloudHosting || "other",
-          scanDepth: webScanDepth === "shallow" ? "quick" : webScanDepth === "moderate" ? "standard" : "comprehensive",
-          authRequired: webAuthRequired,
-          authType: webAuthRequired ? webAuthType : null,
-          authUsername: webAuthRequired ? webAuthUsername : null,
-          authPassword: webAuthRequired ? webAuthPassword : null,
-          authLoginUrl: webAuthRequired && webAuthType === "form" ? webAuthLoginUrl : null,
-          authApiKey: webAuthRequired && webAuthType === "api-key" ? webAuthApiKey : null,
-          authTokenHeader: webAuthRequired && webAuthType === "api-key" ? webAuthTokenHeader : null
-        };
 
-    // Capture scan type to prevent race conditions
-    const currentScanType = appType;
-    
-    // Simulate scan delay
-    setTimeout(() => {
-      createScanMutation.mutate({ scanType: currentScanType, scanData });
-    }, 2000);
+    const webMods = webSecurityModules.length > 0 ? webSecurityModules : ["SAST", "DAST", "SCA", "Secrets"];
+    const mvpMods = mvpSecurityModules.length > 0 ? mvpSecurityModules : ["SAST", "SCA", "Secrets"];
+    const mobMods = mobileSecurityModules.length > 0 ? mobileSecurityModules : ["SAST", "SCA", "Secrets"];
+
+    const scanData =
+      appType === "mvp"
+        ? {
+            projectName,
+            repositoryUrl: repositoryUrl.trim(),
+            platform: sourceRepo,
+            branch: branchNormalized,
+            targetAppStore: mvpDeployKind === "ios" || mvpDeployKind === "android" ? mvpDeployKind : null,
+            appStoreBundleId:
+              mvpDeployKind === "ios" || mvpDeployKind === "android" ? mvpBundleId.trim() || null : null,
+            workflowMetadata: {
+              techStackHint: mvpTechStack.trim() || undefined,
+              cloudInfraHint: mvpCloudInfra.trim() || undefined,
+              securityModules: mvpMods,
+              mvpDeployKind,
+              mvpWebDeployUrl: mvpDeployKind === "web" ? mvpWebDeployUrl.trim() || undefined : undefined,
+            },
+          }
+        : appType === "mobile"
+          ? {
+              appName: mobileAppName,
+              platform: mobilePlatform,
+              appId: mobileAppId,
+              version: mobileVersion,
+              workflowMetadata: {
+                sourceRepositoryUrl: repositoryUrl.trim() || undefined,
+                sourceBranch: branchNormalized,
+                backendApiUrl: mobileBackendApi.trim() || undefined,
+                cloudProviderHint: mobileCloudProvider.trim() || undefined,
+                securityModules: mobMods,
+              },
+            }
+          : {
+              appName: webAppName,
+              appUrl: webDomainUrl.trim(),
+              hostingPlatform: webCloudHosting || "other",
+              scanDepth:
+                webScanDepth === "shallow" ? "quick" : webScanDepth === "moderate" ? "standard" : "comprehensive",
+              authRequired: webAuthRequired,
+              authType: webAuthRequired ? webAuthType : null,
+              authUsername: webAuthRequired ? webAuthUsername : null,
+              authPassword: webAuthRequired ? webAuthPassword : null,
+              authLoginUrl: webAuthRequired && webAuthType === "form" ? webAuthLoginUrl : null,
+              authApiKey: webAuthRequired && webAuthType === "api-key" ? webAuthApiKey : null,
+              authTokenHeader: webAuthRequired && webAuthType === "api-key" ? webAuthTokenHeader : null,
+              workflowMetadata: {
+                sourceRepositoryUrl: repositoryUrl.trim() || undefined,
+                sourceBranch: branchNormalized,
+                securityModules: webMods,
+              },
+            };
+
+    createScanMutation.mutate({ scanType: appType, scanData });
   };
 
   const handleUpload = async (withFixes: boolean, runTests: boolean = false) => {
-    const destination = appType === "mvp" 
-      ? `${mvpTargetStore === "ios" ? "iOS" : "Android"} App Store (${mvpBundleId})`
-      : appType === "mobile"
-      ? `${mobilePlatform === "ios" ? "iOS" : "Android"} App Store (${mobileAppId})`
-      : webDomainUrl;
-    
-    // Update scan record with fix preference BEFORE upload using tracked scan ID
-    if (currentScanId) {
-      try {
-        await apiRequest("PATCH", `/api/${appType}-scans/${currentScanId}`, {
-          fixesApplied: withFixes,
-          uploadPreference: withFixes ? 'fix-and-upload' : 'upload-without-fixes',
-          autoUploadDestination: destination
-        });
-        
-        // Trigger backend upload process (with or without tests)
-        const endpoint = runTests 
-          ? `/api/${appType}-scans/${currentScanId}/upload-and-test`
-          : `/api/${appType}-scans/${currentScanId}/upload`;
-        
-        await apiRequest("POST", endpoint, {
-          withFixes
-        });
-        
-        setScanStatus("uploading");
-        
-        // CRITICAL: Invalidate scan queries immediately so the list updates
-        queryClient.invalidateQueries({ queryKey: [`/api/${appType}-scans`] });
-        queryClient.invalidateQueries({ queryKey: ['/api/findings'] });
-        
-        // Show success toast with short duration (5 seconds) so it doesn't persist
-        toast({
-          title: runTests ? "Upload & Testing Initiated" : "Upload Initiated",
-          description: runTests
-            ? `Your ${withFixes ? "scanned and fixed" : "scanned"} app is being uploaded to ${destination} and comprehensive tests will run automatically.`
-            : `Your ${withFixes ? "scanned and fixed" : "scanned"} app is being uploaded to ${destination}. Check the scan details for progress.`,
-          duration: 5000, // Dismiss after 5 seconds
-        });
-        
-        // Close dialog immediately after upload initiated - no delay
-        onOpenChange(false);
-        resetForm();
-        
-      } catch (error) {
-        console.error("Error uploading scan:", error);
-        toast({
-          title: "Upload Failed",
-          description: "Failed to initiate upload. Please try again.",
-          variant: "destructive",
-        });
-      }
+    if (!currentScanId) {
+      toast({
+        title: "Upload unavailable",
+        description: "No active scan ID. Try running the scan again.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    const destination = getUploadDestinationDisplay();
+
+    try {
+      await apiRequest("PATCH", `/api/${appType}-scans/${currentScanId}`, {
+        fixesApplied: withFixes,
+        uploadPreference: withFixes ? "fix-and-upload" : "upload-without-fixes",
+        autoUploadDestination: destination,
+      });
+
+      const endpoint = runTests
+        ? `/api/${appType}-scans/${currentScanId}/upload-and-test`
+        : `/api/${appType}-scans/${currentScanId}/upload`;
+
+      setScanStatus("uploading");
+      setUploadProgress(0);
+      setUploadStatus("Preparing upload…");
+
+      await apiRequest("POST", endpoint, {
+        withFixes,
+      });
+
+      queryClient.invalidateQueries({ queryKey: [`/api/${appType}-scans`] });
+      queryClient.invalidateQueries({ queryKey: ["/api/findings"] });
+
+      let step = 0;
+      const steps = [15, 40, 70, 100];
+      const labels = ["Applying preferences…", "Staging artifacts…", "Uploading…", "Finalizing…"];
+      const interval = setInterval(() => {
+        if (step < steps.length) {
+          setUploadProgress(steps[step]);
+          setUploadStatus(labels[step] ?? "");
+          step += 1;
+        } else {
+          clearInterval(interval);
+          toast({
+            title: runTests ? "Upload & Testing Initiated" : "Upload Initiated",
+            description: runTests
+              ? `Your ${withFixes ? "scanned and fixed" : "scanned"} app is being uploaded to ${destination} and comprehensive tests will run automatically.`
+              : `Your ${withFixes ? "scanned and fixed" : "scanned"} app is being uploaded to ${destination}. Check the scan details for progress.`,
+            duration: 5000,
+          });
+          onOpenChange(false);
+          resetForm();
+        }
+      }, 180);
+    } catch (error) {
+      console.error("Error uploading scan:", error);
+      setScanStatus("completed");
+      toast({
+        title: "Upload Failed",
+        description: "Failed to initiate upload. Please try again.",
+        variant: "destructive",
+      });
     }
   };
 
@@ -432,9 +476,14 @@ export function NewAppWorkflowDialog({ open, onOpenChange, defaultAppType, hideT
     setProjectName("");
     setRepositoryUrl("");
     setBranch("main");
+    setMvpDeployKind("none");
     setMvpBundleId("");
+    setMvpWebDeployUrl("");
     setMvpTechStack("");
     setMvpCloudInfra("");
+    setMvpSecurityModules(["SAST", "SCA", "Secrets"]);
+    setMobileSecurityModules(["SAST", "SCA", "Secrets"]);
+    setWorkflowAdvancedOpen(false);
     setMobileAppName("");
     setMobileAppId("");
     setMobileVersion("");
@@ -568,61 +617,107 @@ export function NewAppWorkflowDialog({ open, onOpenChange, defaultAppType, hideT
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <div className="flex items-center gap-1"><Label htmlFor="mvp-tech-stack">Tech Stack *</Label><InfoTooltip content="The primary technologies and frameworks used in your project, e.g. React, Node.js, PostgreSQL." testId="info-mvp-tech-stack" /></div>
-                  <Input
-                    id="mvp-tech-stack"
-                    placeholder="e.g., React, Node.js, PostgreSQL"
-                    value={mvpTechStack}
-                    onChange={(e) => setMvpTechStack(e.target.value)}
-                    disabled={scanStatus !== "idle"}
-                    data-testid="input-mvp-tech-stack"
-                  />
-                </div>
-                
-                <div className="space-y-2">
-                  <div className="flex items-center gap-1"><Label htmlFor="mvp-cloud-infra">Cloud/Infrastructure (Optional)</Label><InfoTooltip content="Optional. The cloud platform or infrastructure your app uses for deployment." testId="info-mvp-cloud-infra" /></div>
-                  <Input
-                    id="mvp-cloud-infra"
-                    placeholder="e.g., AWS, Azure, Google Cloud"
-                    value={mvpCloudInfra}
-                    onChange={(e) => setMvpCloudInfra(e.target.value)}
-                    disabled={scanStatus !== "idle"}
-                    data-testid="input-mvp-cloud-infra"
-                  />
-                </div>
-              </div>
+              <Collapsible open={workflowAdvancedOpen} onOpenChange={setWorkflowAdvancedOpen}>
+                <CollapsibleTrigger asChild>
+                  <Button type="button" variant="ghost" className="w-full justify-between px-0" disabled={scanStatus !== "idle"}>
+                    <span className="text-sm font-medium">Advanced (optional)</span>
+                    <ChevronDown className={`h-4 w-4 transition-transform ${workflowAdvancedOpen ? "rotate-180" : ""}`} />
+                  </Button>
+                </CollapsibleTrigger>
+                <CollapsibleContent className="space-y-4 pt-2">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <div className="flex items-center gap-1"><Label htmlFor="mvp-tech-stack">Tech Stack (optional)</Label><InfoTooltip content="Helps tune analysis. Stored with the scan." testId="info-mvp-tech-stack" /></div>
+                      <Input
+                        id="mvp-tech-stack"
+                        placeholder="e.g., React, Node.js, PostgreSQL"
+                        value={mvpTechStack}
+                        onChange={(e) => setMvpTechStack(e.target.value)}
+                        disabled={scanStatus !== "idle"}
+                        data-testid="input-mvp-tech-stack"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <div className="flex items-center gap-1"><Label htmlFor="mvp-cloud-infra">Cloud/Infrastructure (optional)</Label><InfoTooltip content="Optional. Where you plan to host or deploy." testId="info-mvp-cloud-infra" /></div>
+                      <Input
+                        id="mvp-cloud-infra"
+                        placeholder="e.g., AWS, Azure, Google Cloud"
+                        value={mvpCloudInfra}
+                        onChange={(e) => setMvpCloudInfra(e.target.value)}
+                        disabled={scanStatus !== "idle"}
+                        data-testid="input-mvp-cloud-infra"
+                      />
+                    </div>
+                  </div>
+                  <div className="space-y-2">
+                    <Label className="text-sm">Security modules (optional)</Label>
+                    <div className="flex flex-wrap gap-4">
+                      {["SAST", "SCA", "Secrets"].map((m) => (
+                        <label key={m} className="flex items-center gap-2 text-sm">
+                          <Checkbox
+                            checked={mvpSecurityModules.includes(m)}
+                            onCheckedChange={(c) => {
+                              if (c) setMvpSecurityModules([...mvpSecurityModules, m]);
+                              else setMvpSecurityModules(mvpSecurityModules.filter((x) => x !== m));
+                            }}
+                            disabled={scanStatus !== "idle"}
+                          />
+                          {m}
+                        </label>
+                      ))}
+                    </div>
+                    <p className="text-xs text-muted-foreground">Defaults apply if none selected. Stored with the scan record.</p>
+                  </div>
+                </CollapsibleContent>
+              </Collapsible>
 
               <div className="border-t pt-4">
-                <div className="flex items-center gap-1 mb-3"><h3 className="font-semibold">Deployment Destination</h3><InfoTooltip content="Where your scanned and fixed code will be deployed after the scan." testId="info-mvp-deployment-destination" /></div>
+                <div className="flex items-center gap-1 mb-3"><h3 className="font-semibold">Deployment destination (optional)</h3><InfoTooltip content="You can scan without setting a deploy target. Choose where you plan to ship after fixes." testId="info-mvp-deployment-destination" /></div>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div className="space-y-2">
-                    <div className="flex items-center gap-1"><Label htmlFor="target-store">Target App Store *</Label><InfoTooltip content="The app store where your MVP will be published after scanning." testId="info-target-store" /></div>
-                    <Select value={mvpTargetStore} onValueChange={(v) => setMvpTargetStore(v as any)} disabled={scanStatus !== "idle"}>
-                      <SelectTrigger id="target-store" data-testid="select-target-store">
+                  <div className="space-y-2 md:col-span-2">
+                    <div className="flex items-center gap-1"><Label htmlFor="mvp-deploy-kind">Target</Label><InfoTooltip content="Scan only runs the security scan. App stores or Web require details only if you plan to upload there." testId="info-mvp-deploy-kind" /></div>
+                    <Select value={mvpDeployKind} onValueChange={(v) => setMvpDeployKind(v as any)} disabled={scanStatus !== "idle"}>
+                      <SelectTrigger id="mvp-deploy-kind" data-testid="select-mvp-deploy-kind">
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
+                        <SelectItem value="none">Scan only (no deploy target yet)</SelectItem>
                         <SelectItem value="ios">iOS App Store</SelectItem>
                         <SelectItem value="android">Android Play Store</SelectItem>
+                        <SelectItem value="web">Web URL</SelectItem>
                       </SelectContent>
                     </Select>
                   </div>
-                  
-                  <div className="space-y-2">
-                    <div className="flex items-center gap-1"><Label htmlFor="mvp-bundle-id">
-                      {mvpTargetStore === "ios" ? "Bundle ID *" : "Package Name *"}
-                    </Label><InfoTooltip content="The unique identifier for your app in the app store, e.g. com.company.app." testId="info-mvp-bundle-id" /></div>
-                    <Input
-                      id="mvp-bundle-id"
-                      placeholder="e.g., com.company.app"
-                      value={mvpBundleId}
-                      onChange={(e) => setMvpBundleId(e.target.value)}
-                      disabled={scanStatus !== "idle"}
-                      data-testid="input-mvp-bundle-id"
-                    />
-                  </div>
+
+                  {(mvpDeployKind === "ios" || mvpDeployKind === "android") && (
+                    <div className="space-y-2 md:col-span-2">
+                      <div className="flex items-center gap-1"><Label htmlFor="mvp-bundle-id">
+                        {mvpDeployKind === "ios" ? "Bundle ID" : "Package Name"}
+                      </Label><InfoTooltip content="Required for the selected store target." testId="info-mvp-bundle-id" /></div>
+                      <Input
+                        id="mvp-bundle-id"
+                        placeholder="e.g., com.company.app"
+                        value={mvpBundleId}
+                        onChange={(e) => setMvpBundleId(e.target.value)}
+                        disabled={scanStatus !== "idle"}
+                        data-testid="input-mvp-bundle-id"
+                      />
+                    </div>
+                  )}
+
+                  {mvpDeployKind === "web" && (
+                    <div className="space-y-2 md:col-span-2">
+                      <div className="flex items-center gap-1"><Label htmlFor="mvp-web-deploy">Web deployment URL</Label><InfoTooltip content="Where the fixed web app will be deployed (e.g. staging or production URL)." testId="info-mvp-web-deploy" /></div>
+                      <Input
+                        id="mvp-web-deploy"
+                        placeholder="https://app.example.com"
+                        value={mvpWebDeployUrl}
+                        onChange={(e) => setMvpWebDeployUrl(e.target.value)}
+                        disabled={scanStatus !== "idle"}
+                        data-testid="input-mvp-web-deploy"
+                      />
+                    </div>
+                  )}
                 </div>
               </div>
             </TabsContent>
@@ -632,7 +727,7 @@ export function NewAppWorkflowDialog({ open, onOpenChange, defaultAppType, hideT
                 <div className="flex items-start gap-2">
                   <GitBranch className="w-4 h-4 text-blue-500 mt-0.5" />
                   <p className="text-sm text-muted-foreground">
-                    Scan app code from repository and deploy to App Store
+                    Identify the app build to scan. Repository details are optional and stored for reporting.
                   </p>
                 </div>
               </Card>
@@ -651,49 +746,6 @@ export function NewAppWorkflowDialog({ open, onOpenChange, defaultAppType, hideT
                 </div>
 
                 <div className="space-y-2">
-                  <div className="flex items-center gap-1"><Label htmlFor="mobile-source-repo">Code Source *</Label><InfoTooltip content="The repository platform where your mobile app source code is hosted." testId="info-mobile-source-repo" /></div>
-                  <Select value={sourceRepo} onValueChange={(v) => setSourceRepo(v as any)} disabled={scanStatus !== "idle"}>
-                    <SelectTrigger id="mobile-source-repo" data-testid="select-mobile-source-repo">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="github">GitHub</SelectItem>
-                      <SelectItem value="gitlab">GitLab</SelectItem>
-                      <SelectItem value="bitbucket">Bitbucket</SelectItem>
-                      <SelectItem value="custom">Custom Repository</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <div className="flex items-center gap-1"><Label htmlFor="mobile-repo-url">Repository URL *</Label><InfoTooltip content="The full URL to your mobile app code repository." testId="info-mobile-repo-url" /></div>
-                  <Input
-                    id="mobile-repo-url"
-                    placeholder="e.g., https://github.com/username/mobile-app"
-                    value={repositoryUrl}
-                    onChange={(e) => setRepositoryUrl(e.target.value)}
-                    disabled={scanStatus !== "idle"}
-                    data-testid="input-mobile-repository-url"
-                  />
-                </div>
-                
-                <div className="space-y-2">
-                  <div className="flex items-center gap-1"><Label htmlFor="mobile-branch">Branch</Label><InfoTooltip content="The specific branch to scan. Defaults to 'main' if left empty." testId="info-mobile-branch" /></div>
-                  <Input
-                    id="mobile-branch"
-                    placeholder="main"
-                    value={branch}
-                    onChange={(e) => setBranch(e.target.value)}
-                    disabled={scanStatus !== "idle"}
-                    data-testid="input-mobile-branch"
-                  />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div className="space-y-2">
                   <div className="flex items-center gap-1"><Label htmlFor="mobile-version">Version Number *</Label><InfoTooltip content="The version of your mobile app being scanned, e.g. 1.0.0." testId="info-mobile-version" /></div>
                   <Input
                     id="mobile-version"
@@ -704,31 +756,98 @@ export function NewAppWorkflowDialog({ open, onOpenChange, defaultAppType, hideT
                     data-testid="input-mobile-version"
                   />
                 </div>
-                
-                <div className="space-y-2">
-                  <div className="flex items-center gap-1"><Label htmlFor="mobile-backend-api">Backend API Endpoint (Optional)</Label><InfoTooltip content="Optional. The URL of your app's backend API for additional security testing." testId="info-mobile-backend-api" /></div>
-                  <Input
-                    id="mobile-backend-api"
-                    placeholder="e.g., https://api.myapp.com"
-                    value={mobileBackendApi}
-                    onChange={(e) => setMobileBackendApi(e.target.value)}
-                    disabled={scanStatus !== "idle"}
-                    data-testid="input-mobile-backend-api"
-                  />
-                </div>
               </div>
 
-              <div className="space-y-2">
-                <div className="flex items-center gap-1"><Label htmlFor="mobile-cloud-provider">Cloud/Backend Provider (Optional)</Label><InfoTooltip content="Optional. The cloud provider hosting your app's backend services." testId="info-mobile-cloud-provider" /></div>
-                <Input
-                  id="mobile-cloud-provider"
-                  placeholder="e.g., AWS, Firebase, Azure"
-                  value={mobileCloudProvider}
-                  onChange={(e) => setMobileCloudProvider(e.target.value)}
-                  disabled={scanStatus !== "idle"}
-                  data-testid="input-mobile-cloud-provider"
-                />
-              </div>
+              <Collapsible open={workflowAdvancedOpen} onOpenChange={setWorkflowAdvancedOpen}>
+                <CollapsibleTrigger asChild>
+                  <Button type="button" variant="ghost" className="w-full justify-between px-0" disabled={scanStatus !== "idle"}>
+                    <span className="text-sm font-medium">Advanced (optional)</span>
+                    <ChevronDown className={`h-4 w-4 transition-transform ${workflowAdvancedOpen ? "rotate-180" : ""}`} />
+                  </Button>
+                </CollapsibleTrigger>
+                <CollapsibleContent className="space-y-4 pt-2">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <div className="flex items-center gap-1"><Label htmlFor="mobile-source-repo">Code Source</Label><InfoTooltip content="If you link a repo for reference." testId="info-mobile-source-repo" /></div>
+                      <Select value={sourceRepo} onValueChange={(v) => setSourceRepo(v as any)} disabled={scanStatus !== "idle"}>
+                        <SelectTrigger id="mobile-source-repo" data-testid="select-mobile-source-repo">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="github">GitHub</SelectItem>
+                          <SelectItem value="gitlab">GitLab</SelectItem>
+                          <SelectItem value="bitbucket">Bitbucket</SelectItem>
+                          <SelectItem value="custom">Custom Repository</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-2">
+                      <div className="flex items-center gap-1"><Label htmlFor="mobile-branch">Branch</Label><InfoTooltip content="Defaults to main when empty." testId="info-mobile-branch" /></div>
+                      <Input
+                        id="mobile-branch"
+                        placeholder="main"
+                        value={branch}
+                        onChange={(e) => setBranch(e.target.value)}
+                        disabled={scanStatus !== "idle"}
+                        data-testid="input-mobile-branch"
+                      />
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <div className="flex items-center gap-1"><Label htmlFor="mobile-repo-url">Repository URL (optional)</Label><InfoTooltip content="Stored with the scan for your records." testId="info-mobile-repo-url" /></div>
+                      <Input
+                        id="mobile-repo-url"
+                        placeholder="e.g., https://github.com/username/mobile-app"
+                        value={repositoryUrl}
+                        onChange={(e) => setRepositoryUrl(e.target.value)}
+                        disabled={scanStatus !== "idle"}
+                        data-testid="input-mobile-repository-url"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <div className="flex items-center gap-1"><Label htmlFor="mobile-backend-api">Backend API (optional)</Label><InfoTooltip content="Optional backend URL for context." testId="info-mobile-backend-api" /></div>
+                      <Input
+                        id="mobile-backend-api"
+                        placeholder="e.g., https://api.myapp.com"
+                        value={mobileBackendApi}
+                        onChange={(e) => setMobileBackendApi(e.target.value)}
+                        disabled={scanStatus !== "idle"}
+                        data-testid="input-mobile-backend-api"
+                      />
+                    </div>
+                  </div>
+                  <div className="space-y-2">
+                    <div className="flex items-center gap-1"><Label htmlFor="mobile-cloud-provider">Cloud/Backend provider (optional)</Label><InfoTooltip content="Optional. Where backend services run." testId="info-mobile-cloud-provider" /></div>
+                    <Input
+                      id="mobile-cloud-provider"
+                      placeholder="e.g., AWS, Firebase, Azure"
+                      value={mobileCloudProvider}
+                      onChange={(e) => setMobileCloudProvider(e.target.value)}
+                      disabled={scanStatus !== "idle"}
+                      data-testid="input-mobile-cloud-provider"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label className="text-sm">Security modules (optional)</Label>
+                    <div className="flex flex-wrap gap-4">
+                      {["SAST", "SCA", "Secrets"].map((m) => (
+                        <label key={m} className="flex items-center gap-2 text-sm">
+                          <Checkbox
+                            checked={mobileSecurityModules.includes(m)}
+                            onCheckedChange={(c) => {
+                              if (c) setMobileSecurityModules([...mobileSecurityModules, m]);
+                              else setMobileSecurityModules(mobileSecurityModules.filter((x) => x !== m));
+                            }}
+                            disabled={scanStatus !== "idle"}
+                          />
+                          {m}
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                </CollapsibleContent>
+              </Collapsible>
 
               <div className="border-t pt-4">
                 <div className="flex items-center gap-1 mb-3"><h3 className="font-semibold">App Store Details</h3><InfoTooltip content="Details about where your app will be published in the app store." testId="info-mobile-app-store-details" /></div>
@@ -766,9 +885,9 @@ export function NewAppWorkflowDialog({ open, onOpenChange, defaultAppType, hideT
             <TabsContent value="web" className="space-y-4 mt-4">
               <Card className="p-4 bg-blue-500/10 border-blue-500/20">
                 <div className="flex items-start gap-2">
-                  <GitBranch className="w-4 h-4 text-blue-500 mt-0.5" />
+                  <Globe className="w-4 h-4 text-blue-500 mt-0.5" />
                   <p className="text-sm text-muted-foreground">
-                    Scan code from repository and deploy to your live domain
+                    Scan the live URL (DAST). Linking a source repo is optional and stored for your records.
                   </p>
                 </div>
               </Card>
@@ -785,45 +904,15 @@ export function NewAppWorkflowDialog({ open, onOpenChange, defaultAppType, hideT
                     data-testid="input-web-app-name"
                   />
                 </div>
-
                 <div className="space-y-2">
-                  <div className="flex items-center gap-1"><Label htmlFor="web-source-repo">Code Source *</Label><InfoTooltip content="The repository platform where your web app source code is hosted." testId="info-web-source-repo" /></div>
-                  <Select value={sourceRepo} onValueChange={(v) => setSourceRepo(v as any)} disabled={scanStatus !== "idle"}>
-                    <SelectTrigger id="web-source-repo" data-testid="select-web-source-repo">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="github">GitHub</SelectItem>
-                      <SelectItem value="gitlab">GitLab</SelectItem>
-                      <SelectItem value="bitbucket">Bitbucket</SelectItem>
-                      <SelectItem value="custom">Custom Repository</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <div className="flex items-center gap-1"><Label htmlFor="web-repo-url">Repository URL *</Label><InfoTooltip content="The full URL to your web app code repository." testId="info-web-repo-url" /></div>
+                  <div className="flex items-center gap-1"><Label htmlFor="web-domain-url">Live URL to scan *</Label><InfoTooltip content="The deployed site URL to run dynamic checks against." testId="info-web-domain-url" /></div>
                   <Input
-                    id="web-repo-url"
-                    placeholder="e.g., https://github.com/username/web-app"
-                    value={repositoryUrl}
-                    onChange={(e) => setRepositoryUrl(e.target.value)}
+                    id="web-domain-url"
+                    placeholder="e.g., https://myapp.com"
+                    value={webDomainUrl}
+                    onChange={(e) => setWebDomainUrl(e.target.value)}
                     disabled={scanStatus !== "idle"}
-                    data-testid="input-web-repository-url"
-                  />
-                </div>
-                
-                <div className="space-y-2">
-                  <div className="flex items-center gap-1"><Label htmlFor="web-branch">Branch</Label><InfoTooltip content="The specific branch to scan. Defaults to 'main' if left empty." testId="info-web-branch" /></div>
-                  <Input
-                    id="web-branch"
-                    placeholder="main"
-                    value={branch}
-                    onChange={(e) => setBranch(e.target.value)}
-                    disabled={scanStatus !== "idle"}
-                    data-testid="input-web-branch"
+                    data-testid="input-web-domain-url"
                   />
                 </div>
               </div>
@@ -842,9 +931,8 @@ export function NewAppWorkflowDialog({ open, onOpenChange, defaultAppType, hideT
                     </SelectContent>
                   </Select>
                 </div>
-                
                 <div className="space-y-2">
-                  <div className="flex items-center gap-1"><Label htmlFor="web-cloud-hosting">Cloud Hosting Provider (Optional)</Label><InfoTooltip content="Optional. The hosting platform where your web app is deployed." testId="info-web-cloud-hosting" /></div>
+                  <div className="flex items-center gap-1"><Label htmlFor="web-cloud-hosting">Cloud hosting (optional)</Label><InfoTooltip content="Optional. The hosting platform where your web app runs." testId="info-web-cloud-hosting" /></div>
                   <Input
                     id="web-cloud-hosting"
                     placeholder="e.g., Vercel, AWS, Azure, Google Cloud"
@@ -855,6 +943,55 @@ export function NewAppWorkflowDialog({ open, onOpenChange, defaultAppType, hideT
                   />
                 </div>
               </div>
+
+              <Collapsible open={workflowAdvancedOpen} onOpenChange={setWorkflowAdvancedOpen}>
+                <CollapsibleTrigger asChild>
+                  <Button type="button" variant="ghost" className="w-full justify-between px-0" disabled={scanStatus !== "idle"}>
+                    <span className="text-sm font-medium">Advanced (optional)</span>
+                    <ChevronDown className={`h-4 w-4 transition-transform ${workflowAdvancedOpen ? "rotate-180" : ""}`} />
+                  </Button>
+                </CollapsibleTrigger>
+                <CollapsibleContent className="space-y-4 pt-2">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <div className="flex items-center gap-1"><Label htmlFor="web-source-repo">Code source</Label><InfoTooltip content="If you want to record where source lives." testId="info-web-source-repo" /></div>
+                      <Select value={sourceRepo} onValueChange={(v) => setSourceRepo(v as any)} disabled={scanStatus !== "idle"}>
+                        <SelectTrigger id="web-source-repo" data-testid="select-web-source-repo">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="github">GitHub</SelectItem>
+                          <SelectItem value="gitlab">GitLab</SelectItem>
+                          <SelectItem value="bitbucket">Bitbucket</SelectItem>
+                          <SelectItem value="custom">Custom Repository</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-2">
+                      <div className="flex items-center gap-1"><Label htmlFor="web-branch">Branch</Label><InfoTooltip content="Defaults to main when empty." testId="info-web-branch" /></div>
+                      <Input
+                        id="web-branch"
+                        placeholder="main"
+                        value={branch}
+                        onChange={(e) => setBranch(e.target.value)}
+                        disabled={scanStatus !== "idle"}
+                        data-testid="input-web-branch"
+                      />
+                    </div>
+                  </div>
+                  <div className="space-y-2">
+                    <div className="flex items-center gap-1"><Label htmlFor="web-repo-url">Repository URL (optional)</Label><InfoTooltip content="Stored with the scan; not required for DAST." testId="info-web-repo-url" /></div>
+                    <Input
+                      id="web-repo-url"
+                      placeholder="e.g., https://github.com/username/web-app"
+                      value={repositoryUrl}
+                      onChange={(e) => setRepositoryUrl(e.target.value)}
+                      disabled={scanStatus !== "idle"}
+                      data-testid="input-web-repository-url"
+                    />
+                  </div>
+                </CollapsibleContent>
+              </Collapsible>
 
               <div className="space-y-4">
                 <div className="flex items-center gap-2">
@@ -996,7 +1133,7 @@ export function NewAppWorkflowDialog({ open, onOpenChange, defaultAppType, hideT
                 )}
 
                 <div className="space-y-2">
-                  <div className="flex items-center gap-1"><Label>Security Modules *</Label><InfoTooltip content="Select which security analysis modules to run during the scan." testId="info-web-security-modules" /></div>
+                  <div className="flex items-center gap-1"><Label>Security modules (optional)</Label><InfoTooltip content="Defaults to all modules if none selected. Selections are stored on the scan record." testId="info-web-security-modules" /></div>
                   <div className="grid grid-cols-2 gap-3">
                     <div className="flex items-center gap-2">
                       <Checkbox
@@ -1069,24 +1206,6 @@ export function NewAppWorkflowDialog({ open, onOpenChange, defaultAppType, hideT
                   </div>
                 </div>
               </div>
-
-              <div className="border-t pt-4">
-                <div className="flex items-center gap-1 mb-3"><h3 className="font-semibold">Deployment Destination</h3><InfoTooltip content="Where your scanned web app will be deployed." testId="info-web-deployment-destination" /></div>
-                <div className="space-y-2">
-                  <div className="flex items-center gap-1"><Label htmlFor="web-domain-url">Live Domain URL *</Label><InfoTooltip content="The live URL where your web application is hosted or will be deployed." testId="info-web-domain-url" /></div>
-                  <Input
-                    id="web-domain-url"
-                    placeholder="e.g., https://myapp.com"
-                    value={webDomainUrl}
-                    onChange={(e) => setWebDomainUrl(e.target.value)}
-                    disabled={scanStatus !== "idle"}
-                    data-testid="input-web-domain-url"
-                  />
-                  <p className="text-xs text-muted-foreground">
-                    The live URL where your web app will be deployed
-                  </p>
-                </div>
-              </div>
             </TabsContent>
           </Tabs>
 
@@ -1136,11 +1255,7 @@ export function NewAppWorkflowDialog({ open, onOpenChange, defaultAppType, hideT
                   <div className="mt-2 p-3 bg-background/50 rounded-md border">
                     <p className="text-xs text-muted-foreground mb-1">Destination:</p>
                     <p className="text-sm font-medium break-all" data-testid="text-upload-destination">
-                      {appType === "mvp" 
-                        ? `${mvpTargetStore === "ios" ? "iOS" : "Android"} App Store (${mvpBundleId})`
-                        : appType === "mobile"
-                        ? `${mobilePlatform === "ios" ? "iOS" : "Android"} App Store (${mobileAppId})`
-                        : webDomainUrl}
+                      {getUploadDestinationDisplay()}
                     </p>
                   </div>
                   
@@ -1312,13 +1427,7 @@ export function NewAppWorkflowDialog({ open, onOpenChange, defaultAppType, hideT
             onOpenChange={setShowUploadWithoutFixesWarning}
             scanType={appType === "mvp" ? "mvp" : appType === "mobile" ? "mobile" : "web"}
             scanId={currentScanId}
-            destination={
-              appType === "mvp" 
-                ? `${mvpTargetStore === "ios" ? "iOS App Store" : "Google Play Store"}`
-                : appType === "mobile"
-                ? `${mobilePlatform === "ios" ? "iOS App Store" : "Google Play Store"}`
-                : "production server"
-            }
+            destination={getUploadDestinationShortLabel()}
             onProceedAnyway={() => {
               setShowUploadWithoutFixesWarning(false);
               handleUpload(false);
@@ -1363,13 +1472,7 @@ export function NewAppWorkflowDialog({ open, onOpenChange, defaultAppType, hideT
             onClose={() => setShowUploadWithFixesOptions(false)}
             scanType={appType === "mvp" ? "mvp" : appType === "mobile" ? "mobile" : "web"}
             scanId={currentScanId}
-            destination={
-              appType === "mvp" 
-                ? `${mvpTargetStore === "ios" ? "iOS App Store" : "Google Play Store"}`
-                : appType === "mobile"
-                ? `${mobilePlatform === "ios" ? "iOS App Store" : "Google Play Store"}`
-                : "production server"
-            }
+            destination={getUploadDestinationShortLabel()}
             onProceedWithUpload={async (runTests = false) => {
               // Don't close dialog immediately - let it show loading state
               // Start the upload process

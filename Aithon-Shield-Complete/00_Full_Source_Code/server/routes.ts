@@ -1603,13 +1603,21 @@ return user;`;
         });
       };
 
-      // Detect language from repository URL or use default
-      // In production, this could be detected from the repository contents
-      const detectedLanguage = scan.repositoryUrl.includes('.js') || scan.repositoryUrl.includes('javascript') 
-        ? 'javascript' 
-        : scan.repositoryUrl.includes('.py') || scan.repositoryUrl.includes('python')
-        ? 'python'
-        : 'typescript'; // Default
+      // Detect language from optional tech stack hint, repository URL, or default
+      const meta = scan.workflowMetadata as Record<string, unknown> | null | undefined;
+      const hint = typeof meta?.techStackHint === "string" ? meta.techStackHint.toLowerCase() : "";
+      let detectedLanguage: string;
+      if (hint.includes("python")) detectedLanguage = "python";
+      else if (hint.includes("java") && !hint.includes("javascript")) detectedLanguage = "java";
+      else if (hint.includes("go") || hint.includes("golang")) detectedLanguage = "go";
+      else if (hint.includes("rust")) detectedLanguage = "rust";
+      else if (hint.includes("ruby")) detectedLanguage = "ruby";
+      else if (hint.includes("php")) detectedLanguage = "php";
+      else if (scan.repositoryUrl.includes(".js") || scan.repositoryUrl.includes("javascript"))
+        detectedLanguage = "javascript";
+      else if (scan.repositoryUrl.includes(".py") || scan.repositoryUrl.includes("python"))
+        detectedLanguage = "python";
+      else detectedLanguage = "typescript";
 
       // Start real scan in background (non-blocking)
       scanMvpCode(

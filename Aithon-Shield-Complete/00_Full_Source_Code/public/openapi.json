@@ -1,0 +1,53 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Aithon Shield API (subset)",
+    "version": "1.0.0",
+    "description": "REST API for scan workflows. Session cookie auth (`sessionId`) is required for all endpoints unless you add API key support. Use this file as a machine-readable index for agents and IDE integrations."
+  },
+  "servers": [{ "url": "/", "description": "Same origin as the web app" }],
+  "paths": {
+    "/api/auth/login": {
+      "post": {
+        "summary": "Login",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["emailOrUsername", "password"],
+                "properties": {
+                  "emailOrUsername": { "type": "string" },
+                  "password": { "type": "string" }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/me": { "get": { "summary": "Current user" } },
+    "/api/mvp-scans": {
+      "post": {
+        "summary": "Create MVP code scan",
+        "description": "Body matches insertMvpCodeScan (minus userId). Optional workflowMetadata object stores techStackHint, securityModules[], mvpDeployKind, mvpWebDeployUrl."
+      },
+      "get": { "summary": "List MVP scans" }
+    },
+    "/api/mvp-scans/{id}/scan": { "post": { "summary": "Run MVP scan" } },
+    "/api/mvp-scans/{id}/upload": { "post": { "summary": "Simulated upload / apply fixes flag" } },
+    "/api/mobile-scans": { "post": { "summary": "Create mobile scan" }, "get": { "summary": "List mobile scans" } },
+    "/api/mobile-scans/{id}/scan": { "post": { "summary": "Run mobile scan" } },
+    "/api/web-scans": { "post": { "summary": "Create web scan" }, "get": { "summary": "List web scans" } },
+    "/api/web-scans/{id}/scan": { "post": { "summary": "Run web scan" } },
+    "/api/findings": {
+      "get": {
+        "summary": "List findings",
+        "parameters": [
+          { "name": "scanId", "in": "query", "schema": { "type": "string" } },
+          { "name": "scanType", "in": "query", "schema": { "type": "string", "enum": ["mvp", "mobile", "web"] } }
+        ]
+      }
+    }
+  }
+}

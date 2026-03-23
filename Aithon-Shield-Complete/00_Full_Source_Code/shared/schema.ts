@@ -187,6 +187,8 @@ export const mobileAppScans = pgTable("mobile_app_scans", {
   validationStatus: text("validation_status").default('none'),
   validationFindings: jsonb("validation_findings"),
   autoUploadDestination: text("auto_upload_destination"),
+  /** Optional UI hints: techStackHint, securityModules[], sourceRepositoryUrl, backendApiUrl, etc. */
+  workflowMetadata: jsonb("workflow_metadata").$type<Record<string, unknown> | null>(),
   scannedAt: timestamp("scanned_at"),
   uploadedAt: timestamp("uploaded_at"),
   validatedAt: timestamp("validated_at"),
@@ -199,6 +201,7 @@ export const insertMobileAppScanSchema = createInsertSchema(mobileAppScans).omit
 }).extend({
   scannedAt: z.coerce.date().optional(),
   uploadedAt: z.coerce.date().optional(),
+  workflowMetadata: z.record(z.unknown()).nullable().optional(),
 });
 
 export const updateMobileAppScanSchema = z.object({
@@ -264,6 +267,7 @@ export const mvpCodeScans = pgTable("mvp_code_scans", {
   validationStatus: text("validation_status").default('none'), // 'none', 'pending', 'running', 'passed', 'failed', 'blocked'
   validationFindings: jsonb("validation_findings"), // JSON object with validation issues
   autoUploadDestination: text("auto_upload_destination"), // Destination info for re-upload
+  workflowMetadata: jsonb("workflow_metadata").$type<Record<string, unknown> | null>(),
   scannedAt: timestamp("scanned_at"),
   uploadedAt: timestamp("uploaded_at"),
   validatedAt: timestamp("validated_at"),
@@ -276,6 +280,7 @@ export const insertMvpCodeScanSchema = createInsertSchema(mvpCodeScans).omit({
 }).extend({
   scannedAt: z.coerce.date().optional(),
   uploadedAt: z.coerce.date().optional(),
+  workflowMetadata: z.record(z.unknown()).nullable().optional(),
 });
 
 export const updateMvpCodeScanSchema = z.object({
@@ -334,6 +339,7 @@ export const webAppScans = pgTable("web_app_scans", {
   validationStatus: text("validation_status").default('none'),
   validationFindings: jsonb("validation_findings"),
   autoUploadDestination: text("auto_upload_destination"),
+  workflowMetadata: jsonb("workflow_metadata").$type<Record<string, unknown> | null>(),
   scannedAt: timestamp("scanned_at"),
   uploadedAt: timestamp("uploaded_at"),
   validatedAt: timestamp("validated_at"),
@@ -346,6 +352,7 @@ export const insertWebAppScanSchema = createInsertSchema(webAppScans).omit({
 }).extend({
   scannedAt: z.coerce.date().optional(),
   uploadedAt: z.coerce.date().optional(),
+  workflowMetadata: z.record(z.unknown()).nullable().optional(),
 });
 
 export const updateWebAppScanSchema = z.object({

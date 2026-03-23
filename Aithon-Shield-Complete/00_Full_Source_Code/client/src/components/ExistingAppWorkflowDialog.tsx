@@ -70,6 +70,8 @@ export function ExistingAppWorkflowDialog({ open, onOpenChange, defaultAppType, 
   const [webAuthApiKey, setWebAuthApiKey] = useState("");
   const [webAuthLoginUrl, setWebAuthLoginUrl] = useState("");
   const [webSecurityModules, setWebSecurityModules] = useState<string[]>(["SAST", "DAST"]);
+  const [mvpSecurityModules, setMvpSecurityModules] = useState<string[]>(["SAST", "SCA", "Secrets"]);
+  const [mobileSecurityModules, setMobileSecurityModules] = useState<string[]>(["SAST", "SCA", "Secrets"]);
   
   // Scan results
   const [scanResults, setScanResults] = useState({
@@ -215,8 +217,13 @@ export function ExistingAppWorkflowDialog({ open, onOpenChange, defaultAppType, 
   });
 
   const handleDownloadAndScan = () => {
+    const branchNorm = branch.trim() || "main";
+    const webMods = webSecurityModules.length > 0 ? webSecurityModules : ["SAST", "DAST", "SCA", "Secrets"];
+    const mvpMods = mvpSecurityModules.length > 0 ? mvpSecurityModules : ["SAST", "SCA", "Secrets"];
+    const mobMods = mobileSecurityModules.length > 0 ? mobileSecurityModules : ["SAST", "SCA", "Secrets"];
+
     if (appType === "mvp") {
-      if (!projectName || !repositoryUrl) {
+      if (!projectName.trim() || !repositoryUrl.trim()) {
         toast({
           title: "Missing Information",
           description: "Please provide project name and repository URL",
@@ -224,120 +231,125 @@ export function ExistingAppWorkflowDialog({ open, onOpenChange, defaultAppType, 
         });
         return;
       }
-      if (!mvpTechStack) {
-        toast({
-          title: "Missing Information",
-          description: "Please provide the tech stack",
-          variant: "destructive",
-        });
-        return;
-      }
     }
     if (appType === "mobile") {
-      if (!appName || !bundleId) {
+      if (!appName.trim() || !bundleId.trim() || !mobileVersion.trim()) {
         toast({
           title: "Missing Information",
-          description: "Please provide app name and bundle/package ID",
-          variant: "destructive",
-        });
-        return;
-      }
-      if (!mobileVersion) {
-        toast({
-          title: "Missing Information",
-          description: "Please provide version number",
+          description: "Please provide app name, bundle/package ID, and version",
           variant: "destructive",
         });
         return;
       }
     }
     if (appType === "web") {
-      if (!webAppName || !webAppUrl) {
+      if (!webAppName.trim() || !webAppUrl.trim()) {
         toast({
           title: "Missing Information",
-          description: "Please provide app name and URL",
-          variant: "destructive",
-        });
-        return;
-      }
-      if (webSecurityModules.length === 0) {
-        toast({
-          title: "Missing Information",
-          description: "Please select at least one security module",
+          description: "Please provide app name and live URL",
           variant: "destructive",
         });
         return;
       }
     }
 
-    setWorkflowStatus("downloading");
-    
-    // Simulate download
-    setTimeout(() => {
-      setWorkflowStatus("scanning");
-      toast({
-        title: "Download Complete",
-        description: "Starting security scan...",
-      });
-      
-      // Prepare scan data
-      const scanData = appType === "mvp" 
-        ? { 
-            projectName, 
-            repositoryUrl, 
+    const scanData =
+      appType === "mvp"
+        ? {
+            projectName,
+            repositoryUrl: repositoryUrl.trim(),
             platform: sourceRepo,
-            branch
+            branch: branchNorm,
+            workflowMetadata: {
+              techStackHint: mvpTechStack.trim() || undefined,
+              cloudInfraHint: mvpCloudInfra.trim() || undefined,
+              securityModules: mvpMods,
+            },
           }
         : appType === "mobile"
-        ? { 
-            appName, 
-            platform, 
-            appId: bundleId,
-            version: mobileVersion
-          }
-        : { 
-            appName: webAppName, 
-            appUrl: webAppUrl,
-            hostingPlatform: webCloudHosting || "other",
-            scanDepth: webScanDepth === "shallow" ? "quick" : webScanDepth === "moderate" ? "standard" : "comprehensive"
-          };
+          ? {
+              appName,
+              platform,
+              appId: bundleId,
+              version: mobileVersion,
+              workflowMetadata: {
+                backendApiUrl: mobileBackendApi.trim() || undefined,
+                cloudProviderHint: mobileCloudProvider.trim() || undefined,
+                securityModules: mobMods,
+              },
+            }
+          : {
+              appName: webAppName,
+              appUrl: webAppUrl.trim(),
+              hostingPlatform: webCloudHosting || "other",
+              scanDepth:
+                webScanDepth === "shallow" ? "quick" : webScanDepth === "moderate" ? "standard" : "comprehensive",
+              authRequired: webAuthRequired,
+              authType: webAuthRequired ? webAuthType : null,
+              authUsername: webAuthRequired ? webAuthUsername : null,
+              authPassword: webAuthRequired ? webAuthPassword : null,
+              authLoginUrl: webAuthRequired && webAuthType === "form" ? webAuthLoginUrl : null,
+              authApiKey: webAuthRequired && webAuthType === "api-key" ? webAuthApiKey : null,
+              authTokenHeader: webAuthRequired && webAuthType === "api-key" ? "Authorization" : null,
+              workflowMetadata: {
+                securityModules: webMods,
+              },
+            };
 
-      // Simulate scan delay - pass scanType along with scanData
-      setTimeout(() => {
-        createScanMutation.mutate({ scanType: appType, scanData });
-      }, 2000);
-    }, 2000);
+    setWorkflowStatus("scanning");
+    toast({
+      title: "Starting scan",
+      description: "Creating scan and analyzing your app…",
+    });
+    createScanMutation.mutate({ scanType: appType, scanData });
   };
 
   const handleReUpload = async (withFixes: boolean, runTests: boolean = false) => {
-    const destination = appType === "mvp" 
-      ? repositoryUrl || `${sourceRepo.charAt(0).toUpperCase() + sourceRepo.slice(1)} Repository`
-      : appType === "mobile"
-      ? `${platform === "ios" ? "iOS" : "Android"} App Store (${bundleId})`
-      : webAppUrl || "Live Domain";
-    
-    // Update scan record with fix preference BEFORE upload using tracked scan ID
-    if (currentScanId) {
-      try {
-        await apiRequest("PATCH", `/api/${appType}-scans/${currentScanId}`, {
-          fixesApplied: withFixes,
-          uploadPreference: withFixes ? 'fix-and-upload' : 'upload-without-fixes',
-          autoUploadDestination: destination
-        });
-        
-        // Trigger backend upload process (with or without tests)
-        const endpoint = runTests 
-          ? `/api/${appType}-scans/${currentScanId}/upload-and-test`
-          : `/api/${appType}-scans/${currentScanId}/upload`;
-        
-        await apiRequest("POST", endpoint, {
-          withFixes
-        });
-        
-        setWorkflowStatus("uploading");
-        
-        // Show toast and close dialog after upload initiated
-        setTimeout(() => {
+    if (!currentScanId) {
+      toast({
+        title: "Upload unavailable",
+        description: "No active scan ID. Try running the scan again.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    const destination =
+      appType === "mvp"
+        ? repositoryUrl.trim() || `${sourceRepo.charAt(0).toUpperCase() + sourceRepo.slice(1)} repository`
+        : appType === "mobile"
+          ? `${platform === "ios" ? "iOS" : "Android"} App Store (${bundleId})`
+          : webAppUrl.trim() || "Live URL";
+
+    try {
+      await apiRequest("PATCH", `/api/${appType}-scans/${currentScanId}`, {
+        fixesApplied: withFixes,
+        uploadPreference: withFixes ? "fix-and-upload" : "upload-without-fixes",
+        autoUploadDestination: destination,
+      });
+
+      const endpoint = runTests
+        ? `/api/${appType}-scans/${currentScanId}/upload-and-test`
+        : `/api/${appType}-scans/${currentScanId}/upload`;
+
+      await apiRequest("POST", endpoint, {
+        withFixes,
+      });
+
+      setWorkflowStatus("uploading");
+      setUploadProgress(0);
+      setUploadStatus("Preparing upload…");
+
+      let step = 0;
+      const steps = [15, 40, 70, 100];
+      const labels = ["Applying preferences…", "Staging artifacts…", "Uploading…", "Finalizing…"];
+      const interval = setInterval(() => {
+        if (step < steps.length) {
+          setUploadProgress(steps[step]);
+          setUploadStatus(labels[step] ?? "");
+          step += 1;
+        } else {
+          clearInterval(interval);
           toast({
             title: runTests ? "Upload & Testing Initiated" : "Upload Initiated",
             description: runTests
@@ -346,16 +358,16 @@ export function ExistingAppWorkflowDialog({ open, onOpenChange, defaultAppType, 
           });
           onOpenChange(false);
           resetForm();
-        }, 1000);
-        
-      } catch (error) {
-        console.error("Error uploading scan:", error);
-        toast({
-          title: "Upload Failed",
-          description: "Failed to initiate upload. Please try again.",
-          variant: "destructive",
-        });
-      }
+        }
+      }, 180);
+    } catch (error) {
+      console.error("Error uploading scan:", error);
+      setWorkflowStatus("completed");
+      toast({
+        title: "Upload Failed",
+        description: "Failed to initiate upload. Please try again.",
+        variant: "destructive",
+      });
     }
   };
 
@@ -380,6 +392,8 @@ export function ExistingAppWorkflowDialog({ open, onOpenChange, defaultAppType, 
     setWebCloudHosting("");
     setWebAuthRequired(false);
     setWebSecurityModules(["SAST", "DAST"]);
+    setMvpSecurityModules(["SAST", "SCA", "Secrets"]);
+    setMobileSecurityModules(["SAST", "SCA", "Secrets"]);
     setScanResults({ total: 0, critical: 0, high: 0, medium: 0, low: 0 });
     setIssues([]);
     setShowDetails(false);
@@ -503,7 +517,7 @@ export function ExistingAppWorkflowDialog({ open, onOpenChange, defaultAppType, 
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div className="space-y-2">
-                  <div className="flex items-center gap-1"><Label htmlFor="existing-mvp-tech-stack">Tech Stack *</Label><InfoTooltip content="The primary technologies and frameworks used in your existing project." testId="info-existing-mvp-tech-stack" /></div>
+                  <div className="flex items-center gap-1"><Label htmlFor="existing-mvp-tech-stack">Tech Stack (optional)</Label><InfoTooltip content="Helps tune analysis. Stored with the scan." testId="info-existing-mvp-tech-stack" /></div>
                   <Input
                     id="existing-mvp-tech-stack"
                     placeholder="e.g., React, Node.js, PostgreSQL"
@@ -796,7 +810,7 @@ export function ExistingAppWorkflowDialog({ open, onOpenChange, defaultAppType, 
                 )}
 
                 <div className="space-y-2">
-                  <div className="flex items-center gap-1"><Label>Security Modules *</Label><InfoTooltip content="Select which security analysis modules to run during the scan." testId="info-existing-security-modules" /></div>
+                  <div className="flex items-center gap-1"><Label>Security modules (optional)</Label><InfoTooltip content="Defaults to all if none selected. Stored on the scan record." testId="info-existing-security-modules" /></div>
                   <div className="grid grid-cols-2 gap-2">
                     {["SAST", "DAST", "SCA", "Secrets"].map((module) => {
                       const moduleDescriptions: Record<string, string> = {
