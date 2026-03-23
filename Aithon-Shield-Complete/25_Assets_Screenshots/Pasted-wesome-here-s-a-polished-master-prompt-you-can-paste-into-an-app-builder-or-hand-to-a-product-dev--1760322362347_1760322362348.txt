@@ -1,0 +1,356 @@
+wesome—here’s a polished, master prompt you can paste into an app-builder (or hand to a product/dev team) to create a cybersecurity testing platform that covers web, mobile, API, cloud/infrastructure, containers, CI/CD, and supply chain. It runs comprehensive tests, prioritizes findings, auto-generates reports, and guides users to fix issues (with PRs/patches/checklists). I’ve included 5 steps before building and 5 steps after launch to enhance the product.
+
+Master Prompt: “Aegis Auditor” — End-to-End AppSec Testing & Remediation Platform
+Product Vision
+
+Build Aegis Auditor, a multi-tenant, role-based cybersecurity testing and remediation app for web apps, mobile apps (iOS/Android), APIs (REST/GraphQL), cloud & IaC, containers, and CI/CD. It combines automated scans (SAST, DAST, SCA, secrets, mobile, IaC, container, TLS/headers), guided manual tests (authZ/logic abuse), and optional runtime instrumentation (IAST) and fuzzing—then turns results into prioritized fixes: code diffs, config patches, and “click-to-open PR” workflows. It produces executive summaries, technical reports, compliance mappings (OWASP Top 10, ASVS, MASVS, CIS/IaC checks), and closure certificates after retests.
+
+Pre-Build (Do These 5 Steps First)
+
+Define Authorized Use & Legal Guardrails
+
+Require explicit project authorization, scope (hosts, bundle IDs, repos, clouds), and rules of engagement. Built-in “Test Safe” guardrails (rate caps, do-no-harm toggles).
+
+Target Personas & Roles
+
+Security Engineer (admin), Developer (repo access), DevOps (pipelines/cloud), PM/Exec (read-only dashboards), External Auditor (limited view).
+
+Success Metrics & SLAs
+
+Time-to-first-finding <10 min; remediation acceptance in <5 clicks; mean time to remediate (MTTR) High/Critical <14 days; retest pass rate >90%.
+
+Reference Standards & Data Model
+
+Findings map to CWE/CVSS and OWASP/ASVS/MASVS; store SBOMs and scan metadata; immutable evidence logs; data retention & PII minimization.
+
+Deployment & Security Architecture
+
+Choice of SaaS or self-hosted. Encrypt at rest & in transit, SSO/SAML, SCIM, audit logs, VPC peering/PrivateLink for on-prem runners; ephemeral scanning workers; least-privilege OAuth scopes.
+
+Core Capabilities (What to Build)
+1) Onboarding & Project Setup
+
+Project Types: Web, Mobile (APK/IPA), API (OpenAPI/GraphQL), Cloud/IaC, Container, Repo.
+
+Connectors: GitHub/GitLab/Azure Repos/Bitbucket; CI (GitHub Actions, GitLab CI, Jenkins); Cloud (AWS/Azure/GCP); Artifact registries; Jira/Linear/ServiceNow.
+
+Scoping Wizard: Domains, subdomains, API base paths, rate limits, test accounts/roles, environments (dev/stage/prod*), exclusions, maintenance windows.
+
+Secrets & Credentials Vault: Store test creds, API tokens, and proxy certs in a KMS-backed vault with rotation.
+
+2) Test Orchestration Engine
+
+Pipelines: Select “Profiles” (Quick, Full, Compliance, Mobile-only, Infra-only). Parallelize by component.
+
+Runners: Ephemeral containers with network egress policies and traffic shaping; safe-mode flags (no destructive ops).
+
+Scheduling: On demand, nightly, pre-release gates, and per-PR triggers; automatic retests after merges.
+
+3) Automated Testing Modules (Enable/Disable per Project)
+
+SAST (Static Analysis): Multi-language rulesets; detect injection, auth flow flaws, crypto misuse, insecure deserialization, SSRF sinks, path traversal; code-owner routing.
+
+SCA (Dependencies & SBOM): Build/generate SBOM (CycloneDX/SPDX). Flag vulnerable direct/transitive packages with fixed-version recommendations; license policy checks.
+
+Secrets Scanning: Git history & artifacts for keys/tokens/certs; auto-revoke flows where supported.
+
+DAST (Web/API): Crawl & attack simulation (non-destructive): injection (SQL/NoSQL/LDAP/OS), XSS, CSRF, SSRF, auth bypass, IDOR, header/TLS misconfig, info leakage, rate-limit weaknesses; GraphQL checks (introspection, depth/complexity, object enumeration).
+
+Mobile (iOS/Android):
+
+Static: decompile, inspect binary for hardcoded keys/endpoints, insecure platform API usage, exported components.
+
+Dynamic: proxy traffic, check TLS/pinning behavior, data leakage, storage, tamper defenses; jailbreak/root detection.
+
+IaC & Cloud Posture: Terraform/CloudFormation/ARM/K8s scans (open buckets/security groups, permissive IAM, missing encryption, public endpoints); cluster RBAC/Pod policies.
+
+Container/Image Scanning: Base image CVEs, OS package vulns, SUID/root processes, unnecessary capabilities; SBOM for images; verify signatures.
+
+IAST (Optional): Instrument test runs to trace sinks/sources and confirm exploitability (reduces false positives).
+
+Fuzzing (Optional/Controlled): Protocol/HTTP parameter fuzzing with bounds/rate controls; file-format fuzzers for upload endpoints.
+
+TLS/Headers & Hygiene: HSTS, CSP, X-Frame-Options, H2/ALPN, cipher suites.
+
+Performance/Abuse Checks: Resource exhaustion behaviors; brute-force & rate-limit effectiveness (safe thresholds).
+
+4) Guided Manual Testing (Built-In Playbooks)
+
+AuthN/AuthZ: Session management, token tampering, MFA flows, password reset logic, logout invalidation.
+
+Broken Access Control: Horizontal/vertical privilege escalation, forced browsing, IDORs.
+
+Business Logic Abuse: Price/coupon manipulation, order/race conditions, staged multi-step exploit chains.
+
+File Upload/Deserialization: MIME/type checks, storage isolation, parser behavior.
+
+GraphQL Logic: Field-level auth, query bloat, batch authorization.
+
+Each playbook shows: objective → steps → expected vs observed → evidence capture buttons.
+
+5) Findings, Triage & Risk Scoring
+
+Deduplication & Correlation: Merge duplicate issues across modules; show root cause (e.g., same library).
+
+Risk Model: Severity (Critical/High/Med/Low) × exploitability × business impact; CVSS vector; affected assets & user roles; exposure surface.
+
+Filters & Views: By repo, service, sprint, owner, team; “Fix within sprint” recommendations.
+
+6) Remediation Assistant (Make Fixing Easy)
+
+Auto-Fix PRs: For SCA → bump versions; for headers/TLS → config snippets; for IaC → patch diffs; for code → suggested secure patterns (language-aware).
+
+How-To Guides: Secure code examples per framework; links to control requirements (ASVS/MASVS).
+
+Ticketing Integration: One-click create Jira/Linear issues with prefilled acceptance criteria and references.
+
+Guardrails: CI status checks block merges if Critical/High unresolved (customizable).
+
+7) Reporting & Evidence
+
+Executive Summary: Risk posture, trend lines, release readiness (Go/No-Go).
+
+Technical Report: Repro steps, request/response redactions, screenshots, logs; CWE/OWASP mappings.
+
+Compliance Mapping: OWASP Top 10, ASVS levels, MASVS categories; IaC → CIS-style checks.
+
+Attestation & Closure Certificate: After verified fixes, produce signed retest report & certificate.
+
+Exports: PDF, JSON, CSV, SARIF; web links with RBAC.
+
+8) Observability & Governance
+
+Dashboards: MTTR, reopen rate, severity burn-down, top risky services, SBOM drift.
+
+Audit Trail: Who ran what, when, and with which scopes.
+
+Policy Engine: Org rules (e.g., “Fail build if any High in auth module”); exception approvals with expiry.
+
+UX: Key Flows
+
+Create Project → Connect Repos/Cloud → Scope Targets → Choose Profile → Run Scan → Review Findings → Generate Fix PRs/Tickets → Retest → Certify
+
+Clear progress indicators (“Discovering endpoints…”, “Testing auth…”, “Generating SBOM…”).
+
+Evidence viewer with sanitized diffs; “Copy-paste” config fix blocks.
+
+For mobile: upload APK/IPA; detect endpoints/secrets; show device-sim results (TLS pinning, storage).
+
+API & Data Contracts (Examples)
+Project Creation (REST)
+POST /api/v1/projects
+{
+  "name": "Checkout-Service",
+  "type": ["web","api"],
+  "repos": [{"provider":"github","org":"acme","repo":"checkout"}],
+  "targets": {"domains":["app.acme.com"], "apis":["https://api.acme.com/v1"]},
+  "envs": ["staging"],
+  "integrations": {"jira":{"cloudId":"...","projectKey":"CHK"}}
+}
+
+Start Scan
+POST /api/v1/scans
+{
+  "projectId": "proj_123",
+  "profile": "full",
+  "modules": ["sast","sca","secrets","dast","api","tls","headers","iac","container","mobile"],
+  "safeMode": true
+}
+
+Finding (Normalized)
+{
+  "id": "find_789",
+  "title": "IDOR on /orders/{id}",
+  "severity": "HIGH",
+  "cwe": "CWE-639",
+  "owasp": ["A01-Broken Access Control"],
+  "evidence": {"request":"...","response":"..."},
+  "affectedAssets": ["/orders/*"],
+  "recommendation": "Enforce object-level authZ check using order.ownerId === user.id",
+  "autoFix": {"available": false},
+  "tickets": [{"system":"Jira","key":"CHK-312"}],
+  "status": "OPEN"
+}
+
+Auto-Fix PR (Example)
+{
+  "repo": "acme/checkout",
+  "branch": "security/fix-csp-headers",
+  "changes": [
+    {"file":"nginx.conf","patch":"+ add_header Content-Security-Policy \"default-src 'self'\";"},
+    {"file":"Dockerfile","patch":"- FROM node:16\n+ FROM gcr.io/distroless/nodejs:16"}
+  ],
+  "tests": ["headers-csp-present","no-mixed-content"]
+}
+
+Built-In Test Catalog (What the app must test)
+
+Web/API DAST
+
+Injection (SQL/NoSQL/LDAP/OS), XSS (reflected/stored/DOM), CSRF, SSRF, XXE, path traversal, open redirects, insecure deserialization, missing/weak auth, broken session mgmt, TLS/cipher/HSTS, security headers, verbose errors, rate-limit & brute-force checks, GraphQL introspection/depth/authorization.
+
+AuthN/AuthZ & Logic
+
+Password reset/lockout/MFA/session invalidation; IDOR (horizontal/vertical), forced browsing, mass assignment; business logic abuses (coupon replay, price override, race conditions).
+
+SAST
+
+Unvalidated input, taint flows, crypto misuse (ECB/random seeds), insecure randomness, command exec, unsafe eval/serialization, hardcoded secrets, SSRF sinks.
+
+SCA/SBOM
+
+Vulnerable packages (direct/transitive) with fix versions; license/usage policy; drift across releases.
+
+Secrets
+
+Keys/tokens/certs in code, config, env, build logs, artifact registries; history scanning; rotation hints.
+
+Mobile (iOS/Android)
+
+Static: exposed components, exported activities, debug flags, hardcoded API keys, obfuscation status.
+
+Dynamic: SSL pinning/mTLS checks, plaintext traffic, local storage leakage (Keychain/Keystore/mmap/caches), backup flags, clipboard leakage, intent spoofing.
+
+Backend parity: token lifetimes, refresh, offline sync abuse.
+
+IaC/Cloud
+
+Public buckets, open SGs/NSGs, missing encryption (at rest/in transit), overly broad IAM, public AMIs/images, unrestricted KMS grants, K8s RBAC gaps, pod privilege escalations.
+
+Containers/K8s
+
+Base image CVEs, root processes, writable root FS, capabilities; network policies; image signing; secret mounts.
+
+IAST/Fuzzing (optional)
+
+Validate actual exploit paths; fuzz parsers/endpoints within rate guards.
+
+TLS/Headers
+
+HSTS, CSP, X-Content-Type-Options, Referrer-Policy, X-Frame-Options, modern ciphers/ALPN.
+
+Observability
+
+Security logs present, structured, and shipped; alertable events; retention & redaction.
+
+Remediation UX Details
+
+Per-finding Fix Cards include:
+
+Root cause summary, affected files/endpoints, “Why it matters”.
+
+Fix options: (a) open PR with patch, (b) copy config snippet, (c) open ticket with acceptance criteria.
+
+Verification steps to turn the card green after retest.
+
+Batch Fix: Upgrade multiple vulnerable libs at once with a “roll-up PR”.
+
+Guarded Merges: Policy that blocks merges if Critical/High remain, with timed exceptions requiring approver.
+
+CI/CD & Policy Integration
+
+Pre-merge: Run SAST/SCA/secrets on PRs; annotate diffs.
+
+Post-deploy (staging): DAST/API, headers/TLS, IAST.
+
+Policy as Code: YAML policy: severity thresholds, allowed licenses, must-have headers, MFA enforcement.
+
+Status Checks: Git checks (pass/fail) with deep links back to findings.
+
+Reporting & Compliance
+
+Executive PDF: posture, top risks, trending MTTR, release recommendation.
+
+Technical HTML/PDF: all findings with evidence and repro; environment & runner info.
+
+Compliance Views: OWASP Top 10, ASVS level mapping, MASVS for mobile, CIS-style for IaC/K8s.
+
+Attestation: cryptographic signature of reports, immutable hash.
+
+Non-Functional Requirements
+
+Scalability: Queue & workers; horizontal autoscaling; backpressure; multi-region job routing.
+
+Safety: Global concurrency/rate caps; environment tagging; read-only “safe mode.”
+
+Privacy: Data minimization; redaction of secrets/PII in stored evidence.
+
+Resilience: Idempotent jobs, retry with jitter, circuit breakers to targets.
+
+In-App Copilot (Optional, But Powerful)
+
+“Explain This Finding”: plain-English breakdown for devs.
+
+“Generate Fix”: propose code/config diff with tests.
+
+“Create Runbook”: one-pager for recurring classes of issues.
+
+“Simulate Attacker Path”: chain findings to show blast radius.
+
+Sample User Stories / Acceptance Criteria
+
+As a Security Engineer, I can connect a repo and run a Full profile, seeing findings bucketed by service with risk scores and recommended owners.
+
+As a Developer, I can receive a PR with the minimal version bump that resolves a CVE; CI gates fail if I try to downgrade.
+
+As a PM/Exec, I can download a signed PDF executive summary and a “Go/No-Go” release badge.
+
+As an Auditor, I can view read-only evidence and compliance mappings without repo access.
+
+Post-Launch: 5 Enhancement Steps
+
+Continuous Attack Surface Management
+
+External asset discovery, subdomain/cert transparency monitoring; new service auto-onboarding and baseline scans.
+
+ML-Assisted Triage & Prioritization
+
+Learn from merges/reopens to rank findings; cluster duplicates; predict “false positive” likelihood.
+
+Runtime Protections & Feedback Loop
+
+Optional RASP sensors (staging) to confirm exploitability; feed back to prioritization; suggest WAF rules for quick mitigations.
+
+Supply Chain Trust
+
+Mandatory attestations (SLSA-style), signed builds, provenance tracking; block unsigned images; SBOM drift alerts per release.
+
+Program Maturity & Benchmarking
+
+Org scorecards, team leaderboards, recommended quarterly objectives (e.g., “reduce High MTTR by 30%”); policy recommendations based on peer benchmarks.
+
+Deliverables to Generate Automatically
+
+SBOMs per build (CycloneDX/SPDX).
+
+Risk Register CSV/JSON with CWE/CVSS and owners.
+
+Change Log of fixes (PR links, tickets, commit SHAs).
+
+Closure Certificate after retest (signed hash, timestamp).
+
+Quick Prompts Inside the App (Operators Can Click or Type)
+
+“Scan staging on Full profile with safe-mode, include GraphQL checks.”
+
+“Open PRs for all High SCA vulns with non-breaking updates.”
+
+“Generate MASVS report for Android app v2.3.1.”
+
+“Add HSTS/CSP header patches for edge CDN and retest headers.”
+
+“Show all IDOR findings affecting role ‘customer’ sorted by exploitability.”
+
+Optional Schema: Policy as Code (YAML)
+version: 1
+fail_on_severity: HIGH
+allow_licenses: ["MIT","Apache-2.0","BSD-3-Clause"]
+require_headers:
+  - Content-Security-Policy
+  - Strict-Transport-Security
+mobile:
+  require_tls_pinning: true
+  forbid_plaintext_traffic: true
+iac:
+  block_public_buckets: true
+  enforce_encryption_at_rest: true

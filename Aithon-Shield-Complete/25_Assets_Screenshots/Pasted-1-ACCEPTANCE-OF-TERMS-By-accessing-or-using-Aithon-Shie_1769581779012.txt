@@ -1,0 +1,124 @@
+1. ACCEPTANCE OF TERMS
+By accessing or using Aithon Shield (the "Service"), whether through our web application or mobile application, you ("User", "you", or "your") agree to be bound by these Terms of Service ("Terms"). If you do not agree to all of these Terms, do not access or use the Service.
+
+These Terms constitute a legally binding agreement between you and the operators of Aithon Shield ("we", "us", or "our"). Your use of the Service is also governed by our Privacy Policy.
+
+2. AI-GENERATED CONTENT & NO WARRANTY
+THE SERVICE USES ARTIFICIAL INTELLIGENCE TO GENERATE SECURITY ASSESSMENTS, VULNERABILITY REPORTS, AND CODE FIXES. ALL OUTPUTS ARE PROVIDED "AS IS" WITHOUT WARRANTY OF ANY KIND.
+
+2.1 Nature of AI Analysis: The Service employs machine learning models, large language models (LLMs), and other AI technologies to analyze code, applications, and systems. These AI models may:
+
+Produce false positives (flagging issues that don't exist)
+Produce false negatives (missing actual security vulnerabilities)
+Generate incorrect or suboptimal remediation suggestions
+Misinterpret code context or business logic
+Provide outdated security recommendations
+2.2 No Guarantee of Accuracy: We make no representations or warranties regarding the accuracy, completeness, reliability, or suitability of any AI-generated content. Security findings and recommendations may not reflect the latest threats, vulnerabilities, or industry best practices.
+
+2.3 Professional Review Required: All AI-generated security assessments, vulnerability reports, and code fixes MUST be independently reviewed and validated by qualified cybersecurity professionals before implementation in any production environment.
+
+2.4 Not a Substitute for Professional Services: The Service is not a substitute for professional cybersecurity consulting, penetration testing, or security auditing by qualified human experts.
+
+3. LIMITATION OF LIABILITY
+TO THE MAXIMUM EXTENT PERMITTED BY LAW, WE SHALL NOT BE LIABLE FOR ANY DAMAGES ARISING FROM YOUR USE OF THE SERVICE.
+
+3.1 No Liability for AI Errors: We are not liable for any damages, losses, security breaches, data loss, financial loss, reputational harm, or any other consequences resulting from:
+
+Reliance on AI-generated security assessments or recommendations
+Implementation of AI-generated code fixes or patches
+False negatives (undetected vulnerabilities)
+False positives (incorrectly flagged issues)
+Any inaccuracies, errors, or omissions in AI-generated content
+3.2 No Liability for Security Breaches: We are not responsible if your application, system, or data suffers a security breach, hack, data leak, or unauthorized access, even if you used the Service for security testing.
+
+3.3 Exclusion of Consequential Damages: In no event shall we be liable for any indirect, incidental, special, consequential, or punitive damages, including but not limited to loss of profits, data, use, goodwill, or other intangible losses resulting from:
+
+Use or inability to use the Service
+Unauthorized access to or alteration of your data
+Any conduct or content of any third party on the Service
+Any content obtained from the Service
+Security vulnerabilities not detected by the Service
+3.4 Maximum Liability Cap: Our total liability to you for all claims arising from or related to the Service shall not exceed the amount you paid us, if any, in the twelve (12) months preceding the claim. If you have not paid us any fees, our liability is limited to $100 USD.
+
+4. DISCLAIMER OF WARRANTIES
+THE SERVICE IS PROVIDED "AS IS" AND "AS AVAILABLE" WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED.
+
+We expressly disclaim all warranties, including but not limited to:
+
+Warranties of merchantability
+Fitness for a particular purpose
+Non-infringement
+Accuracy or reliability of AI-generated content
+Uninterrupted or error-free operation
+Security or freedom from viruses or harmful components
+Accuracy of any recommendations or assessments
+No advice or information, whether oral or written, obtained by you from us or through the Service shall create any warranty not expressly stated in these Terms.
+
+5. USER RESPONSIBILITIES
+5.1 Proper Use: You are solely responsible for:
+
+Ensuring you have authorization to test the applications and systems you scan
+Validating all AI-generated findings with qualified security professionals
+Testing all AI-generated code fixes in non-production environments first
+Implementing proper security controls independent of this Service
+Maintaining backups of all code and data
+Complying with all applicable laws and regulations
+5.2 Prohibited Uses: You may not:
+
+Use the Service to test systems you don't own or have permission to test
+Rely solely on the Service for compliance with security regulations
+Deploy AI-generated fixes to production without proper testing and review
+Use the Service for illegal, harmful, or malicious purposes
+Attempt to reverse engineer, decompile, or extract the AI models
+5.3 Indemnification: You agree to indemnify, defend, and hold harmless us, our officers, directors, employees, and agents from any claims, damages, losses, liabilities, and expenses (including legal fees) arising from:
+
+Your use or misuse of the Service
+Your violation of these Terms
+Your violation of any rights of another party
+Security breaches or vulnerabilities in your applications
+Implementation of AI-generated code or recommendations
+6. DATA & PRIVACY
+6.1 Data Processing: By using the Service, you acknowledge that we may process, analyze, and store your code, application data, and scan results to provide the Service and improve our AI models.
+
+6.2 Sensitive Information: Do not upload code or applications containing highly sensitive data, trade secrets, or personal identifiable information (PII) unless you have implemented appropriate safeguards.
+
+6.3 No Confidentiality Guarantee: While we implement reasonable security measures, we cannot guarantee the confidentiality or security of data transmitted to or stored by the Service.
+
+7. MODIFICATIONS TO SERVICE & TERMS
+We reserve the right to modify, suspend, or discontinue the Service (or any part thereof) at any time without notice. We may also update these Terms from time to time. Continued use of the Service after changes constitutes acceptance of the modified Terms.
+
+We are not liable to you or any third party for any modification, suspension, or discontinuance of the Service.
+
+8. THIRD-PARTY SERVICES & AI PROVIDERS
+The Service may use third-party AI providers (such as OpenAI) and other external services. Your use of the Service is subject to the terms and policies of these third-party providers. We are not responsible for the availability, accuracy, or reliability of third-party services.
+
+9. GOVERNING LAW & DISPUTE RESOLUTION
+These Terms shall be governed by and construed in accordance with the laws of [Your Jurisdiction], without regard to its conflict of law provisions. Any disputes arising from these Terms or the Service shall be resolved through binding arbitration in accordance with the rules of [Arbitration Association].
+
+You waive any right to a jury trial and any right to participate in a class action lawsuit.
+
+10. MISCELLANEOUS
+10.1 Entire Agreement: These Terms constitute the entire agreement between you and us regarding the Service.
+
+10.2 Severability: If any provision of these Terms is found to be unenforceable, the remaining provisions will remain in full force and effect.
+
+10.3 No Waiver: Our failure to enforce any right or provision of these Terms will not be considered a waiver of those rights.
+
+10.4 Assignment: You may not assign or transfer these Terms without our prior written consent. We may assign our rights and obligations without restriction.
+
+11. CONTACT INFORMATION
+If you have questions about these Terms, please contact us at: support@aithonshield.com
+
+IMPORTANT: AI-POWERED SERVICE NOTICE
+Aithon Shield is an AI-powered security testing platform. All security scans, vulnerability assessments, risk analyses, remediation suggestions, and code fixes are generated through artificial intelligence and machine learning algorithms. These results are not guaranteed to be accurate, complete, or suitable for production use.
+
+By using this service, you acknowledge that all AI-generated outputs should be independently verified by qualified security professionals before implementation.
+
+ACKNOWLEDGMENT
+BY CLICKING "I ACCEPT" BELOW, YOU ACKNOWLEDGE THAT YOU HAVE READ, UNDERSTOOD, AND AGREE TO BE BOUND BY THESE TERMS OF SERVICE. YOU SPECIFICALLY ACKNOWLEDGE AND AGREE THAT:
+
+This is an AI-powered service with no guarantees of accuracy
+All AI-generated content must be independently verified
+We are not liable for any damages arising from your use of the Service
+You use the Service entirely at your own risk
+You are responsible for validating and testing all AI-generated fixes

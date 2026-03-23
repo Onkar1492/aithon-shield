@@ -1,0 +1,121 @@
+List of syntax errors
+class Person
+
+Missing colon at the end of the class definition line.
+
+Fix: class Person:
+
+def __init__(self, name, age)
+
+Missing colon at the end of the function definition line.
+
+Fix: def __init__(self, name, age):
+
+def greet(self)
+
+Missing colon at the end of the function definition line.
+
+Fix: def greet(self):
+
+for p in people
+
+Missing colon at the end of the for loop header.
+
+Fix: for p in people:
+
+if p.age > 30
+
+Missing colon at the end of the if statement.
+
+Fix: if p.age > 30:
+
+else (under that if)
+
+Missing colon at the end of the else line.
+
+Fix: else:
+
+for person in person_list
+
+Missing colon at the end of the for loop header.
+
+Fix: for person in person_list:
+
+print("Average age is: " average_age)
+
+Missing comma or + between string and variable; this is parsed as invalid syntax.
+
+Fix: print("Average age is: ", average_age) or print("Average age is: " + str(average_age))
+
+for i in range(len(numbers))
+
+Missing colon at the end of the for loop header.
+
+Fix: for i in range(len(numbers)):
+
+if numbers[i] % 2 == 0
+
+Missing colon at the end of the if statement.
+
+Fix: if numbers[i] % 2 == 0:
+
+elif numbers[i] % 2 == 1
+
+Missing colon at the end of the elif statement.
+
+Fix: elif numbers[i] % 2 == 1:
+
+else (in that block)
+
+Missing colon at the end of the else line.
+
+Fix: else:
+
+settings = { ... block
+
+The dictionary literal is never closed with } before the if statement.
+
+Fix: Add a } after "max_retries": 3, and remove the trailing comma, e.g.
+settings = {"debug": True, "log_file": "app.log", "max_retries": 3}
+
+if settings["debug"]
+
+Missing colon at the end of the if statement.
+
+Fix: if settings["debug"]:
+
+try
+
+Missing colon at the end of the try line.
+
+Fix: try:
+
+with open("data.txt", "w") as f
+
+Missing colon at the end of the with statement.
+
+Fix: with open("data.txt", "w") as f:
+
+def connect(host, port=5432, *, use_ssl=False, timeout=30
+
+Missing closing parenthesis and colon at the end of the function definition.
+
+Fix: def connect(host, port=5432, *, use_ssl=False, timeout=30):
+
+if use_ssl
+
+Missing colon at the end of the if statement.
+
+Fix: if use_ssl:
+
+squares = [x**2 for x in numbers if x % 2 == 0
+
+Missing closing bracket ] at the end of the list comprehension.
+
+Fix: squares = [x**2 for x in numbers if x % 2 == 0]
+
+result_list = [increment(x) for x in squares
+
+Missing closing bracket ] at the end of the list comprehension.
+
+Fix: result_list = [increment(x) for x in squares]
