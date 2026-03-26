@@ -24,7 +24,8 @@ import {
   updateProfileSchema,
   updateNotificationsSchema,
   type User as SchemaUser,
-  type FixValidationSession
+  type FixValidationSession,
+  type MvpCodeScan,
 } from "@shared/schema";
 import { z, ZodError } from "zod";
 import QRCode from "qrcode";
@@ -37,13 +38,46 @@ import { createSamlStrategy, generateSamlMetadata } from "./samlService";
 import { getAuthorizationUrl, handleOidcCallback, clearOidcClientCache } from "./oidcService";
 import { hashPassword, comparePassword, createSession, getSessionUserId, deleteSession, setupSessionCleanup } from "./auth";
 import { sendPushNotification, getVapidPublicKey, notifyScanStart, notifyScanComplete, notifyFixesApplied, notifyUploadComplete } from "./pushNotificationService";
-import { scanMvpCode } from "./services/mvpScanService";
 import { scanWebApp } from "./services/webScanService";
 import { scanMobileApp } from "./services/mobileScanService";
 import { handleScanError, formatErrorForLogging, ScanError } from "./services/errors";
 import { validateScanBeforeStart, validateMvpRepositoryUrl, validateWebAppUrl, validateWebAppAuth, validateMobileAppScan } from "./services/scanValidation";
 import { validateCodeBeforeUpload, runComprehensiveTests } from "./validation-service";
 import Stripe from "stripe";
+import { resolvedSecurityModules } from "./scanModuleUtils";
+import { buildAuthMiddleware } from "./authMiddleware";
+import { generatePlainApiKey, hashApiKey, keyPrefixFromPlain } from "./apiKeyService";
+import { logAuditEvent } from "./auditEmitter";
+import { registerGitIntegrationRoutes } from "./gitIntegrationRoutes";
+import { registerMergeGateRoutes } from "./mergeGateRoutes";
+import { registerAithonShieldPolicyRoutes } from "./aithonShieldPolicyRoutes";
+import { registerCveWatchlistRoutes } from "./cveWatchlistRoutes";
+import { registerSlaRoutes } from "./slaRoutes";
+import { registerRiskExceptionRoutes } from "./riskExceptionRoutes";
+import { registerComplianceEvidenceRoutes } from "./complianceEvidenceRoutes";
+import { registerVexRoutes } from "./vexRoutes";
+import { registerTrackerIntegrationRoutes } from "./trackerIntegrationRoutes";
+import { registerWebhookRoutes } from "./webhookRoutes";
+import { registerDeveloperScoreCardRoutes } from "./developerScoreCardRoutes";
+import { registerSecretsRotationRoutes } from "./secretsRotationRoutes";
+import { TIER_PLANS, TIER_FEATURES, TIER_LIMITS, type TierName } from "@shared/tierConfig";
+import { LEARNING_MODULES, VULNERABILITY_EXPLAINERS } from "@shared/learningContent";
+import { getAppConfigPayload, isDemoMode } from "./demoMode";
+import { authStrictRateLimitMiddleware } from "./rateLimitMiddleware";
+import { buildShieldAdvisorSystemPrompt, runShieldAdvisorModel } from "./services/shieldAdvisorService";
+import { enrichFindingWithFixConfidence, enrichFindingsList } from "./findingsEnrichment";
+import { clusterFindings, getDuplicateClusters, computeFingerprint } from "./services/findingsDeduplicationService";
+import { buildMultiRepoSummary } from "./services/repoEnvironmentSummaryService";
+import { buildUpgradePlan } from "./services/dependencyUpgradePlannerService";
+import { buildSecurityHealthSummary } from "@shared/securityHealthMetrics";
+import { computeInitialNextRunAt, computeNextRunAt } from "@shared/scheduledScanUtils";
+import { startMvpScanBackground } from "./executeMvpScanBackground";
+import { analyzeContainerScanLayers } from "./services/containerImageLayerService";
+import {
+  correlateSastDastFindings,
+  normalizeRepositoryUrl,
+} from "./services/sastDastCorrelationService";
+import type { ContainerScan } from "@shared/schema";
 
 // Extend Express User type to match our schema
 declare global {
@@ -55,6 +89,66 @@ declare global {
 // Type helper for authenticated requests
 type AuthenticatedRequest = Express.Request & { user: SchemaUser };
 
+/** Registry manifest / layer metadata (replaces mock random container findings). */
+async function runContainerImageLayerScanJob(scan: ContainerScan): Promise<void> {
+  const displayName = `${scan.imageName}:${scan.imageTag}`;
+  await notifyScanStart(storage, scan.userId, scan.id, "container", displayName);
+  await storage.updateContainerScan(scan.id, scan.userId, { scanStatus: "scanning" });
+  try {
+    const { findings } = await analyzeContainerScanLayers({
+      imageName: scan.imageName,
+      imageTag: scan.imageTag,
+      registry: scan.registry,
+      registryUrl: scan.registryUrl,
+    });
+    let critical = 0;
+    let high = 0;
+    let medium = 0;
+    let low = 0;
+    for (const f of findings) {
+      if (f.severity === "CRITICAL") critical++;
+      else if (f.severity === "HIGH") high++;
+      else if (f.severity === "MEDIUM") medium++;
+      else low++;
+      await storage.createFinding({
+        userId: scan.userId,
+        title: f.title,
+        description: f.description,
+        severity: f.severity,
+        category: f.category,
+        asset: displayName,
+        cwe: f.cwe,
+        detected: new Date().toISOString(),
+        status: "open",
+        location: f.location,
+        remediation: f.remediation,
+        aiSuggestion: f.aiSuggestion,
+        riskScore: f.riskScore,
+        exploitabilityScore: f.exploitabilityScore,
+        impactScore: f.impactScore,
+        source: "container-scan",
+        containerScanId: scan.id,
+        scanId: scan.id,
+        scanType: "container",
+      });
+    }
+    await storage.updateContainerScan(scan.id, scan.userId, {
+      scanStatus: "completed",
+      scannedAt: new Date(),
+      findingsCount: findings.length,
+      criticalCount: critical,
+      highCount: high,
+      mediumCount: medium,
+      lowCount: low,
+    });
+    await notifyScanComplete(storage, scan.userId, scan.id, "container", displayName, findings.length);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : "Container scan failed";
+    console.error("[container-scan]", msg, err);
+    await storage.updateContainerScan(scan.id, scan.userId, { scanStatus: "failed" });
+  }
+}
+
 export async function registerRoutes(app: Express): Promise<Server> {
   // put application routes here
   // prefix all routes with /api
@@ -62,26 +156,238 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // use storage to perform CRUD operations on the storage interface
   // e.g. storage.insertUser(user) or storage.getUserByUsername(username)
 
-  // Authentication middleware
-  const requireAuth = async (req: any, res: any, next: any) => {
-    const sessionId = req.cookies?.sessionId;
-    
-    if (!sessionId) {
-      return res.status(401).json({ message: "Unauthorized" });
+  app.get("/api/app-config", (_req, res) => {
+    res.json(getAppConfigPayload());
+  });
+
+  const { requireAuth, requireSessionAuth } = buildAuthMiddleware(storage);
+
+  // -------------------------------------------------------------------------
+  // EARLY /api REGISTRATION — add new `register*Routes(app, { storage, requireAuth })` here.
+  // Rationale: handlers are registered before Vite in server/index.ts. If the UI gets JSON
+  // { message: "API route not found", code: "API_ROUTE_NOT_REGISTERED_OR_STALE_SERVER" }
+  // for a new endpoint, the running Node process usually predates that route — restart dev.
+  // -------------------------------------------------------------------------
+
+  /** Registered early so it cannot be shadowed; same handler as below. */
+  app.get("/api/security-health", requireAuth, async (req: any, res) => {
+    try {
+      const raw = parseInt(String(req.query.days ?? "30"), 10);
+      const days = Number.isFinite(raw) ? raw : 30;
+      const findings = await storage.getAllFindings(req.user.id, false);
+      res.json(buildSecurityHealthSummary(findings, days));
+    } catch (error: any) {
+      res.status(500).json({ message: error?.message ?? "Security health failed" });
     }
-    
-    const userId = await getSessionUserId(storage, sessionId);
-    if (!userId) {
-      return res.status(401).json({ message: "Unauthorized" });
+  });
+
+  /** Registered early (same pattern as security-health) so dev Vite catch-all never wins. */
+  registerRiskExceptionRoutes(app, { storage, requireAuth });
+
+  /** Compliance evidence ZIP download. */
+  registerComplianceEvidenceRoutes(app, { storage, requireAuth });
+
+  /** CycloneDX VEX JSON from findings. */
+  registerVexRoutes(app, { storage, requireAuth });
+
+  /** Jira Cloud + Linear issue creation from findings. */
+  registerTrackerIntegrationRoutes(app, { storage, requireSessionAuth });
+
+  /** Structured webhooks + SIEM (JSON / CEF / syslog). */
+  registerWebhookRoutes(app, { storage, requireSessionAuth });
+
+  /** Per-project developer score cards from findings. */
+  registerDeveloperScoreCardRoutes(app, { storage, requireAuth });
+
+  /** Secrets rotation workflow — guided checklist for rotating hardcoded secrets. */
+  registerSecretsRotationRoutes(app, { storage, requireAuth });
+
+  /** OSS tier positioning — plans, features, and tier upgrade (P5-G2). */
+  app.get("/api/plans", (_req, res) => {
+    res.json({ plans: TIER_PLANS, features: TIER_FEATURES, limits: TIER_LIMITS });
+  });
+
+  app.get("/api/plans/current", requireAuth, async (req: any, res) => {
+    try {
+      const user = await storage.getUser(req.user.id);
+      if (!user) return res.status(404).json({ message: "User not found" });
+      const tier = (user.subscriptionTier || "free") as TierName;
+      const plan = TIER_PLANS.find((p) => p.id === tier) ?? TIER_PLANS[0];
+      const limits = TIER_LIMITS[tier] ?? TIER_LIMITS.free;
+      res.json({ tier, plan, limits, subscriptionStatus: user.subscriptionStatus ?? "active" });
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
     }
-    
-    const user = await storage.getUser(userId);
-    if (!user) {
-      return res.status(401).json({ message: "Unauthorized" });
+  });
+
+  app.post("/api/plans/upgrade", requireAuth, async (req: any, res) => {
+    try {
+      const { tier } = req.body;
+      if (!tier || !["free", "pro", "enterprise"].includes(tier)) {
+        return res.status(400).json({ message: "Invalid tier. Must be free, pro, or enterprise." });
+      }
+      const updated = await storage.updateUser(req.user.id, { subscriptionTier: tier });
+      if (!updated) return res.status(404).json({ message: "User not found" });
+      void logAuditEvent({
+        userId: req.user.id,
+        action: "subscription.upgrade",
+        resourceType: "user",
+        resourceId: req.user.id,
+        metadata: { newTier: tier },
+        req,
+      });
+      const plan = TIER_PLANS.find((p) => p.id === tier) ?? TIER_PLANS[0];
+      const limits = TIER_LIMITS[tier as TierName] ?? TIER_LIMITS.free;
+      res.json({ tier, plan, limits, message: `Upgraded to ${plan.name}` });
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
     }
-    
-    req.user = user;
-    next();
+  });
+
+  /** Learning Center — content and progress tracking (P5-H4). */
+  app.get("/api/learning/content", (_req, res) => {
+    res.json({ modules: LEARNING_MODULES, explainers: VULNERABILITY_EXPLAINERS });
+  });
+
+  app.get("/api/learning/progress", requireAuth, async (req: any, res) => {
+    try {
+      const progress = await storage.getLearningProgress(req.user.id);
+      res.json({ progress });
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.post("/api/learning/progress", requireAuth, async (req: any, res) => {
+    try {
+      const { contentId, contentType, completed, lastSectionIndex } = req.body;
+      if (!contentId || !contentType) {
+        return res.status(400).json({ message: "contentId and contentType are required" });
+      }
+      if (!["module", "explainer"].includes(contentType)) {
+        return res.status(400).json({ message: "contentType must be 'module' or 'explainer'" });
+      }
+      const result = await storage.upsertLearningProgress(req.user.id, contentId, contentType, {
+        completed,
+        lastSectionIndex,
+      });
+      res.json(result);
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
+  const createApiKeyBodySchema = z.object({
+    name: z.string().min(1).max(128),
+    scopes: z.array(z.enum(["read", "write", "admin"])).min(1).optional().default(["read", "write"]),
+  });
+
+  const shieldAdvisorChatBodySchema = z.object({
+    message: z.string().min(1).max(16000),
+    findingId: z.string().optional(),
+    scanType: z.enum(["mvp", "web", "mobile", "none"]).optional(),
+    scanId: z.string().optional(),
+    extraContext: z.string().max(8000).optional(),
+  });
+
+  const handleShieldAdvisorChat = async (req: any, res: any) => {
+    try {
+      const parsed = shieldAdvisorChatBodySchema.parse(req.body);
+      const userId = req.user.id;
+
+      if (parsed.findingId && parsed.findingId !== "global") {
+        const f = await storage.getFinding(parsed.findingId, userId);
+        if (!f) {
+          return res.status(404).json({ message: "Finding not found" });
+        }
+      }
+
+      const st = parsed.scanType ?? "none";
+      const sid = parsed.scanId ?? "none";
+      if (st !== "none" && sid !== "none") {
+        if (st === "mvp" && !(await storage.getMvpCodeScan(sid, userId))) {
+          return res.status(404).json({ message: "Scan not found" });
+        }
+        if (st === "web" && !(await storage.getWebAppScan(sid, userId))) {
+          return res.status(404).json({ message: "Scan not found" });
+        }
+        if (st === "mobile" && !(await storage.getMobileAppScan(sid, userId))) {
+          return res.status(404).json({ message: "Scan not found" });
+        }
+      }
+
+      const { convFindingId, convScanType, convScanId, systemPrompt } = await buildShieldAdvisorSystemPrompt(
+        storage,
+        userId,
+        {
+          findingId: parsed.findingId,
+          scanType: parsed.scanType,
+          scanId: parsed.scanId,
+          extraContext: parsed.extraContext,
+        },
+      );
+
+      const existing = await storage.getShieldAdvisorConversation(userId, convFindingId, convScanType, convScanId);
+      const prior = (existing?.messages as { role: string; content: string }[]) ?? [];
+      const history = prior
+        .filter((m) => m.role === "user" || m.role === "assistant")
+        .map((m) => ({ role: m.role as "user" | "assistant", content: m.content }))
+        .slice(-40);
+
+      const provider = (req.user.shieldAdvisorProvider as string) || "openai";
+
+      let reply: string;
+      try {
+        reply = await runShieldAdvisorModel(provider, systemPrompt, history, parsed.message);
+      } catch (e: any) {
+        console.error("[Shield Advisor]", e);
+        return res.status(503).json({
+          message: e?.message ?? "Shield Advisor model is unavailable",
+          code: "SHIELD_ADVISOR_MODEL_ERROR",
+        });
+      }
+
+      const newMessages = [
+        ...history,
+        { role: "user" as const, content: parsed.message },
+        { role: "assistant" as const, content: reply },
+      ];
+
+      await storage.upsertShieldAdvisorConversation({
+        userId,
+        findingId: convFindingId,
+        scanType: convScanType,
+        scanId: convScanId,
+        provider,
+        messages: newMessages,
+      });
+
+      void logAuditEvent({
+        userId,
+        action: "shield_advisor.chat",
+        resourceType: "shield_advisor",
+        resourceId: convFindingId,
+        metadata: { provider, scanType: convScanType, scanId: convScanId },
+        req,
+      });
+
+      res.json({
+        response: reply,
+        provider,
+        conversation: { findingId: convFindingId, scanType: convScanType, scanId: convScanId },
+      });
+    } catch (error: any) {
+      if (error instanceof ZodError) {
+        return res.status(400).json({ message: error.errors[0]?.message ?? "Invalid body" });
+      }
+      res.status(500).json({ message: error.message });
+    }
+  };
+
+  /** Strip large SBOM JSON from API responses; expose sbomAvailable for UI. */
+  const mvpScanPublicView = (scan: MvpCodeScan) => {
+    const { sbomCycloneDxJson: _c, sbomSpdxJson: _s, ...rest } = scan;
+    return { ...rest, sbomAvailable: Boolean(scan.sbomGeneratedAt) };
   };
 
   // Helper function to mark findings as resolved when fixes are applied
@@ -543,8 +849,15 @@ return user;`;
   };
 
   // Authentication endpoints
-  app.post("/api/auth/signup", async (req, res) => {
+  app.post("/api/auth/signup", authStrictRateLimitMiddleware, async (req, res) => {
     try {
+      if (isDemoMode()) {
+        return res.status(403).json({
+          message:
+            "Demo mode: new accounts are disabled. Sign in with a seeded demo user (see the yellow demo banner on the login page).",
+          code: "DEMO_SIGNUP_DISABLED",
+        });
+      }
       const validatedData = signUpSchema.parse(req.body);
       
       // Check if user already exists
@@ -562,14 +875,25 @@ return user;`;
       const hashedPassword = await hashPassword(validatedData.password);
       
       // Create user
-      const user = await storage.createUser({
+      let user = await storage.createUser({
         email: validatedData.email,
         firstName: validatedData.firstName,
         lastName: validatedData.lastName,
         username: validatedData.username,
         password: hashedPassword,
       });
-      
+      await storage.ensurePersonalOrganization(user.id, user.username);
+      user = (await storage.getUser(user.id)) ?? user;
+
+      void logAuditEvent({
+        userId: user.id,
+        action: "auth.signup",
+        resourceType: "user",
+        resourceId: user.id,
+        metadata: { email: user.email },
+        req,
+      });
+
       // Create session
       const sessionId = await createSession(storage, user.id);
       
@@ -597,12 +921,12 @@ return user;`;
     }
   });
 
-  app.post("/api/auth/login", async (req, res) => {
+  app.post("/api/auth/login", authStrictRateLimitMiddleware, async (req, res) => {
     try {
       const validatedData = loginSchema.parse(req.body);
       
       // Find user by email or username
-      const user = await storage.getUserByEmailOrUsername(validatedData.emailOrUsername);
+      let user = await storage.getUserByEmailOrUsername(validatedData.emailOrUsername);
       
       if (!user) {
         return res.status(401).json({ message: "Invalid credentials" });
@@ -613,7 +937,19 @@ return user;`;
       if (!isValidPassword) {
         return res.status(401).json({ message: "Invalid credentials" });
       }
-      
+
+      await storage.ensurePersonalOrganization(user.id, user.username);
+      user = (await storage.getUser(user.id)) ?? user;
+
+      void logAuditEvent({
+        userId: user.id,
+        action: "auth.login",
+        resourceType: "user",
+        resourceId: user.id,
+        metadata: { email: user.email },
+        req,
+      });
+
       // Create session
       const sessionId = await createSession(storage, user.id);
       
@@ -640,6 +976,16 @@ return user;`;
   app.post("/api/auth/logout", async (req, res) => {
     const sessionId = req.cookies?.sessionId;
     if (sessionId) {
+      const userId = await getSessionUserId(storage, sessionId);
+      if (userId) {
+        void logAuditEvent({
+          userId,
+          action: "auth.logout",
+          resourceType: "user",
+          resourceId: userId,
+          req,
+        });
+      }
       await deleteSession(storage, sessionId);
       res.clearCookie('sessionId');
     }
@@ -651,7 +997,132 @@ return user;`;
     res.json({ user: userWithoutPassword });
   });
 
-  app.patch("/api/user/profile", requireAuth, async (req: any, res) => {
+  app.get("/api/api-keys", requireSessionAuth, async (req: any, res) => {
+    const keys = await storage.listApiKeys(req.user.id);
+    res.json(keys);
+  });
+
+  app.post("/api/api-keys", requireSessionAuth, async (req: any, res) => {
+    try {
+      const parsed = createApiKeyBodySchema.parse(req.body);
+      const scopesCsv = [...new Set(parsed.scopes)].sort().join(",");
+      const plain = generatePlainApiKey();
+      const keyHash = hashApiKey(plain);
+      const keyPrefix = keyPrefixFromPlain(plain);
+      const row = await storage.createApiKey(req.user.id, parsed.name, keyPrefix, keyHash, scopesCsv);
+      void logAuditEvent({
+        userId: req.user.id,
+        action: "api_key.create",
+        resourceType: "api_key",
+        resourceId: row.id,
+        metadata: { name: row.name, keyPrefix: row.keyPrefix, scopes: scopesCsv },
+        req,
+      });
+      res.status(201).json({
+        id: row.id,
+        name: row.name,
+        keyPrefix: row.keyPrefix,
+        plainKey: plain,
+        createdAt: row.createdAt,
+      });
+    } catch (error: any) {
+      if (error instanceof ZodError) {
+        return res.status(400).json({ message: error.errors[0]?.message ?? "Invalid body" });
+      }
+      res.status(500).json({ message: error.message });
+    }
+  });
+
+  app.delete("/api/api-keys/:id", requireSessionAuth, async (req: any, res) => {
+    const ok = await storage.deleteApiKey(req.params.id, req.user.id);
+    if (!ok) {
+      return res.status(404).json({ message: "API key not found" });
+    }
+    void logAuditEvent({
+      userId: req.user.id,
+      action: "api_key.delete",
+      resourceType: "api_key",
+      resourceId: req.params.id,
+      req,
+    });
+    res.status(204).send();
+  });
+
+  app.post("/api/shield-advisor/chat", requireAuth, handleShieldAdvisorChat);
+  app.post("/api/chat", requireAuth, handleShieldAdvisorChat);
+
+  registerGitIntegrationRoutes(app, { storage, requireSessionAuth });
+  registerMergeGateRoutes(app, { storage, requireAuth });
+  registerAithonShieldPolicyRoutes(app, { requireAuth });
+  registerCveWatchlistRoutes(app, { storage, requireAuth });
+  registerSlaRoutes(app, { storage, requireAuth, requireSessionAuth });
+
+  app.post("/api/onboarding/complete", requireAuth, async (req: any, res) => {
+    try {
+      const user = await storage.updateUser(req.user.id, { onboardingCompletedAt: new Date() });
+      if (!user) return res.status(404).json({ message: "User not found" });
+      void logAuditEvent({
+        userId: req.user.id,
+        action: "user.onboarding_completed",
+        resourceType: "user",
+        resourceId: req.user.id,
+        req,
+      });
+      const { password: _, ...safe } = user;
+      res.json({ user: safe });
+    } catch (e: any) {
+      res.status(500).json({ message: e?.message ?? "Failed to complete onboarding" });
+    }
+  });
+
+  app.get("/api/audit-events", requireSessionAuth, async (req: any, res) => {
+    const limit = Math.min(200, Math.max(1, parseInt(String(req.query.limit), 10) || 100));
+    const offset = Math.max(0, parseInt(String(req.query.offset), 10) || 0);
+    const rows = await storage.listAuditEvents(req.user.id, { limit, offset });
+    res.json({ events: rows, limit, offset });
+  });
+
+  app.get("/api/audit-events/export.csv", requireSessionAuth, async (req: any, res) => {
+    const rows = await storage.listAuditEvents(req.user.id, { limit: 5000, offset: 0 });
+    const header = "id,createdAt,action,resourceType,resourceId,userId,ipAddress\n";
+    const escape = (s: string | null | undefined) => {
+      if (s == null) return "";
+      const t = String(s).replace(/"/g, '""');
+      return `"${t}"`;
+    };
+    const body = rows
+      .map(
+        (r) =>
+          [
+            escape(r.id),
+            escape(r.createdAt?.toISOString?.() ?? String(r.createdAt)),
+            escape(r.action),
+            escape(r.resourceType),
+            escape(r.resourceId),
+            escape(r.userId),
+            escape(r.ipAddress),
+          ].join(","),
+      )
+      .join("\n");
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", 'attachment; filename="aithon-audit-log.csv"');
+    res.send(header + body);
+  });
+
+  app.get("/api/organizations", requireSessionAuth, async (req: any, res) => {
+    const rows = await storage.getOrganizationsForUser(req.user.id);
+    res.json({
+      organizations: rows.map((r) => ({
+        id: r.organization.id,
+        name: r.organization.name,
+        slug: r.organization.slug,
+        role: r.role,
+        createdAt: r.organization.createdAt,
+      })),
+    });
+  });
+
+  app.patch("/api/user/profile", requireSessionAuth, async (req: any, res) => {
     try {
       const validatedData = updateProfileSchema.parse(req.body);
       
@@ -677,7 +1148,18 @@ return user;`;
       if (!user) {
         return res.status(404).json({ message: "User not found" });
       }
-      
+
+      void logAuditEvent({
+        userId: req.user.id,
+        action: "user.profile_update",
+        resourceType: "user",
+        resourceId: req.user.id,
+        metadata: {
+          updatedFields: Object.keys(validatedData).map((k) => (k === "password" ? "password" : k)),
+        },
+        req,
+      });
+
       const { password: _, ...userWithoutPassword } = user;
       res.json({ user: userWithoutPassword });
     } catch (error: any) {
@@ -689,7 +1171,7 @@ return user;`;
     }
   });
 
-  app.patch("/api/user/notifications", requireAuth, async (req: any, res) => {
+  app.patch("/api/user/notifications", requireSessionAuth, async (req: any, res) => {
     try {
       const validatedData = updateNotificationsSchema.parse(req.body);
       
@@ -719,7 +1201,7 @@ return user;`;
     }
   });
 
-  app.post("/api/push/subscribe", requireAuth, async (req: any, res) => {
+  app.post("/api/push/subscribe", requireSessionAuth, async (req: any, res) => {
     try {
       const { subscription } = req.body;
       
@@ -742,7 +1224,7 @@ return user;`;
     }
   });
 
-  app.post("/api/push/unsubscribe", requireAuth, async (req: any, res) => {
+  app.post("/api/push/unsubscribe", requireSessionAuth, async (req: any, res) => {
     try {
       const user = await storage.updateUser(req.user.id, {
         pushSubscription: null
@@ -758,6 +1240,31 @@ return user;`;
     }
   });
 
+  /** Multi-repo / multi-environment dashboard summary. */
+  app.get("/api/repo-environment-summary", requireAuth, async (req: any, res) => {
+    try {
+      const userId = req.user!.id;
+      const [mvpScans, mobileScans, webScans, containerScans, pipelineScans, networkScans, linterScans, allFindings] = await Promise.all([
+        storage.getAllMvpCodeScans(userId),
+        storage.getAllMobileAppScans(userId),
+        storage.getAllWebAppScans(userId),
+        storage.getAllContainerScans(userId),
+        storage.getAllPipelineScans(userId),
+        storage.getAllNetworkScans(userId),
+        storage.getAllLinterScans(userId),
+        storage.getAllFindings(userId, false),
+      ]);
+      const summary = buildMultiRepoSummary(
+        mvpScans as any, mobileScans as any, webScans as any,
+        containerScans as any, pipelineScans as any, networkScans as any, linterScans as any,
+        allFindings as any,
+      );
+      res.json(summary);
+    } catch (error: any) {
+      res.status(500).json({ message: error.message });
+    }
+  });
+
   // Findings endpoints
   app.get("/api/findings", requireAuth, async (req: any, res) => {
     try {
@@ -767,7 +1274,7 @@ return user;`;
       // If scanId and scanType provided, filter by scan
       if (scanId && scanType) {
         // Validate scanType to prevent malformed requests
-        const validScanTypes = ['mvp', 'mobile', 'web', 'pipeline', 'container', 'network', 'linter'];
+        const validScanTypes = ['mvp', 'mobile', 'web', 'pipeline', 'container', 'api', 'network', 'linter'];
         if (!validScanTypes.includes(scanType as string)) {
           return res.status(400).json({ message: 'Invalid scan type' });
         }
@@ -782,7 +1289,69 @@ return user;`;
         const dateB = b.scanCreatedAt ? new Date(b.scanCreatedAt).getTime() : 0;
         return dateB - dateA;
       });
-      res.json(sortedFindings);
+      res.json(enrichFindingsList(sortedFindings));
+    } catch (error: any) {
+      res.status(500).json({ message: error.message });
+    }
+  });
+
+  /** Findings deduplication — all clusters (including singletons). */
+  app.get("/api/findings/clusters", requireAuth, async (req: any, res) => {
+    try {
+      const allFindings = await storage.getAllFindings(req.user.id, false);
+      const summary = clusterFindings(allFindings);
+      const enrichedClusters = summary.clusters.map((c) => ({
+        ...c,
+        canonical: enrichFindingWithFixConfidence(c.canonical),
+        duplicates: enrichFindingsList(c.duplicates),
+      }));
+      res.json({ ...summary, clusters: enrichedClusters });
+    } catch (error: any) {
+      res.status(500).json({ message: error.message });
+    }
+  });
+
+  /** Findings deduplication — only clusters with 2+ findings (actual duplicates). */
+  app.get("/api/findings/duplicates", requireAuth, async (req: any, res) => {
+    try {
+      const allFindings = await storage.getAllFindings(req.user.id, false);
+      const summary = getDuplicateClusters(allFindings);
+      const enrichedClusters = summary.clusters.map((c) => ({
+        ...c,
+        canonical: enrichFindingWithFixConfidence(c.canonical),
+        duplicates: enrichFindingsList(c.duplicates),
+      }));
+      res.json({ ...summary, clusters: enrichedClusters });
+    } catch (error: any) {
+      res.status(500).json({ message: error.message });
+    }
+  });
+
+  /** Dismiss duplicates in a cluster — archives all non-canonical findings. */
+  app.post("/api/findings/clusters/:fingerprint/dismiss-duplicates", requireAuth, async (req: any, res) => {
+    try {
+      const { fingerprint } = req.params;
+      const allFindings = await storage.getAllFindings(req.user.id, false);
+      const matching = allFindings.filter((f: any) => computeFingerprint(f) === fingerprint);
+      if (matching.length === 0) {
+        return res.status(404).json({ message: "Cluster not found" });
+      }
+      matching.sort((a: any, b: any) => {
+        if (b.priorityScore !== a.priorityScore) return b.priorityScore - a.priorityScore;
+        return new Date(b.detected).getTime() - new Date(a.detected).getTime();
+      });
+      const canonical = matching[0];
+      const duplicates = matching.slice(1);
+      let archivedCount = 0;
+      for (const dup of duplicates) {
+        await storage.archiveFinding(dup.id, req.user.id);
+        archivedCount++;
+      }
+      res.json({
+        message: `Archived ${archivedCount} duplicate(s); kept canonical finding.`,
+        canonicalId: canonical.id,
+        archivedCount,
+      });
     } catch (error: any) {
       res.status(500).json({ message: error.message });
     }
@@ -791,10 +1360,18 @@ return user;`;
   app.get("/api/findings/archived", requireAuth, async (req: any, res) => {
     try {
       const archivedFindings = await storage.getArchivedFindings(req.user.id);
-      res.json(archivedFindings);
+      res.json(enrichFindingsList(archivedFindings));
     } catch (error: any) {
       res.status(500).json({ message: error.message });
     }
+  });
+
+  app.get("/api/findings/:id", requireAuth, async (req: any, res) => {
+    const f = await storage.getFinding(req.params.id, req.user.id);
+    if (!f) {
+      return res.status(404).json({ message: "Finding not found" });
+    }
+    res.json(enrichFindingWithFixConfidence(f));
   });
 
   app.post("/api/findings", requireAuth, async (req: any, res) => {
@@ -804,7 +1381,7 @@ return user;`;
         ...validatedData,
         userId: req.user.id,
       });
-      res.status(201).json(finding);
+      res.status(201).json(enrichFindingWithFixConfidence(finding));
     } catch (error: any) {
       res.status(400).json({ message: error.message });
     }
@@ -816,7 +1393,7 @@ return user;`;
       if (!finding) {
         return res.status(404).json({ message: "Finding not found" });
       }
-      res.json(finding);
+      res.json(enrichFindingWithFixConfidence(finding));
     } catch (error: any) {
       res.status(500).json({ message: error.message });
     }
@@ -828,7 +1405,7 @@ return user;`;
       if (!finding) {
         return res.status(404).json({ message: "Finding not found" });
       }
-      res.json(finding);
+      res.json(enrichFindingWithFixConfidence(finding));
     } catch (error: any) {
       res.status(500).json({ message: error.message });
     }
@@ -840,7 +1417,7 @@ return user;`;
       if (!finding) {
         return res.status(404).json({ message: "Finding not found" });
       }
-      res.json(finding);
+      res.json(enrichFindingWithFixConfidence(finding));
     } catch (error: any) {
       res.status(500).json({ message: error.message });
     }
@@ -988,12 +1565,12 @@ return user;`;
     try {
       const userId = req.user!.id;
       const scan = await storage.getMobileAppScan(req.params.id, userId);
-      if (!scan || scan.userId !== userId) {
+      if (!scan) {
         return res.status(404).json({ message: "Scan not found" });
       }
       
       // Calculate real-time finding counts
-      const counts = await storage.getFindingCountsByScan(req.params.id, userId);
+      const counts = await storage.getFindingCountsByScan(req.params.id, userId, "mobile");
       
       // Always update scan record to keep it in sync
       if (scan.findingsCount !== counts.findingsCount || 
@@ -1017,11 +1594,11 @@ return user;`;
   app.get("/api/mobile-scans/:id/findings", requireAuth, async (req: any, res) => {
     try {
       const scan = await storage.getMobileAppScan(req.params.id, req.user.id);
-      if (!scan || scan.userId !== req.user.id) {
+      if (!scan) {
         return res.status(404).json({ message: "Scan not found" });
       }
       const findings = await storage.getFindingsByScan(req.params.id, req.user.id, "mobile");
-      res.json(findings);
+      res.json(enrichFindingsList(findings));
     } catch (error: any) {
       res.status(500).json({ message: error.message });
     }
@@ -1033,6 +1610,7 @@ return user;`;
       const scan = await storage.createMobileAppScan({
         ...validatedData,
         userId: req.user!.id,
+        organizationId: req.user!.defaultOrganizationId ?? null,
       });
       res.status(201).json(scan);
     } catch (error: any) {
@@ -1043,8 +1621,11 @@ return user;`;
   app.patch("/api/mobile-scans/:id", requireAuth, async (req: any, res) => {
     try {
       const scan = await storage.getMobileAppScan(req.params.id, req.user.id);
-      if (!scan || scan.userId !== req.user.id) {
+      if (!scan) {
         return res.status(404).json({ message: "Scan not found" });
+      }
+      if (!(await storage.canMutateMobileAppScan(req.user.id, scan))) {
+        return res.status(403).json({ message: "You do not have permission to modify this scan" });
       }
 
       // Only allow editing specific fields (not platform to avoid invalidating results)
@@ -1056,6 +1637,9 @@ return user;`;
       }
 
       const updatedScan = await storage.updateMobileAppScan(req.params.id, req.user.id, validatedData);
+      if (!updatedScan) {
+        return res.status(404).json({ message: "Scan not found" });
+      }
       res.json(updatedScan);
     } catch (error: any) {
       res.status(400).json({ message: error.message });
@@ -1065,8 +1649,11 @@ return user;`;
   app.delete("/api/mobile-scans/:id", requireAuth, async (req: any, res) => {
     try {
       const scan = await storage.getMobileAppScan(req.params.id, req.user.id);
-      if (!scan || scan.userId !== req.user.id) {
+      if (!scan) {
         return res.status(404).json({ message: "Scan not found" });
+      }
+      if (!(await storage.canMutateMobileAppScan(req.user.id, scan))) {
+        return res.status(403).json({ message: "You do not have permission to modify this scan" });
       }
 
       await storage.deleteMobileAppScan(req.params.id, req.user.id);
@@ -1079,8 +1666,11 @@ return user;`;
   app.patch("/api/mobile-scans/:id/cancel", requireAuth, async (req: any, res) => {
     try {
       const scan = await storage.getMobileAppScan(req.params.id, req.user.id);
-      if (!scan || scan.userId !== req.user.id) {
+      if (!scan) {
         return res.status(404).json({ message: "Scan not found" });
+      }
+      if (!(await storage.canMutateMobileAppScan(req.user.id, scan))) {
+        return res.status(403).json({ message: "You do not have permission to modify this scan" });
       }
 
       // Only allow cancelling if scan is in progress
@@ -1094,6 +1684,9 @@ return user;`;
         scanStatus: 'cancelling',
         scanStage: 'Cancellation requested...',
       });
+      if (!updatedScan) {
+        return res.status(404).json({ message: "Scan not found" });
+      }
       res.json({ message: "Cancellation requested", scan: updatedScan });
     } catch (error: any) {
       res.status(500).json({ message: error.message });
@@ -1105,6 +1698,9 @@ return user;`;
       const scan = await storage.getMobileAppScan(req.params.id, req.user.id);
       if (!scan) {
         return res.status(404).json({ message: "Scan not found" });
+      }
+      if (!(await storage.canMutateMobileAppScan(req.user.id, scan))) {
+        return res.status(403).json({ message: "You do not have permission to modify this scan" });
       }
 
       // Validate scan inputs before starting
@@ -1151,6 +1747,9 @@ return user;`;
 
 
       // Start real scan in background (non-blocking)
+      const mobileMeta = scan.workflowMetadata as Record<string, unknown> | null | undefined;
+      const mobileMods = resolvedSecurityModules(mobileMeta, ["SAST", "SCA", "Secrets"]);
+
       scanMobileApp(
         appUrl,
         scan.platform as 'ios' | 'android',
@@ -1159,6 +1758,7 @@ return user;`;
           version: scan.version,
           userId: req.user.id,
           scanId: scan.id,
+          securityModules: mobileMods,
         },
         progressCallback
       ).then(async (result) => {
@@ -1248,8 +1848,11 @@ return user;`;
   app.post("/api/mobile-scans/:id/validate-upload", requireAuth, async (req: any, res) => {
     try {
       const scan = await storage.getMobileAppScan(req.params.id, req.user.id);
-      if (!scan || scan.userId !== req.user.id) {
+      if (!scan) {
         return res.status(404).json({ message: "Scan not found" });
+      }
+      if (!(await storage.canMutateMobileAppScan(req.user.id, scan))) {
+        return res.status(403).json({ message: "You do not have permission to modify this scan" });
       }
 
       // Simulate validation - in production this would analyze the entire codebase
@@ -1303,6 +1906,9 @@ return user;`;
       
       if (!scan) {
         return res.status(404).json({ message: "Scan not found" });
+      }
+      if (!(await storage.canMutateMobileAppScan(req.user.id, scan))) {
+        return res.status(403).json({ message: "You do not have permission to modify this scan" });
       }
 
       // If uploading with fixes, mark all findings for this scan as resolved
@@ -1365,6 +1971,9 @@ return user;`;
       
       if (!scan) {
         return res.status(404).json({ message: "Scan not found" });
+      }
+      if (!(await storage.canMutateMobileAppScan(req.user.id, scan))) {
+        return res.status(403).json({ message: "You do not have permission to modify this scan" });
       }
 
       // If uploading with fixes, mark all findings for this scan as resolved
@@ -1438,7 +2047,7 @@ return user;`;
   app.get("/api/mvp-scans", requireAuth, async (req: any, res) => {
     try {
       const scans = await storage.getAllMvpCodeScans(req.user.id);
-      res.json(scans);
+      res.json(scans.map(mvpScanPublicView));
     } catch (error: any) {
       res.status(500).json({ message: error.message });
     }
@@ -1448,12 +2057,12 @@ return user;`;
     try {
       const userId = req.user!.id;
       const scan = await storage.getMvpCodeScan(req.params.id, userId);
-      if (!scan || scan.userId !== userId) {
+      if (!scan) {
         return res.status(404).json({ message: "Scan not found" });
       }
       
       // Calculate real-time finding counts
-      const counts = await storage.getFindingCountsByScan(req.params.id, userId);
+      const counts = await storage.getFindingCountsByScan(req.params.id, userId, "mvp");
       
       // Always update scan record to keep it in sync (check all counts including medium/low)
       if (scan.findingsCount !== counts.findingsCount || 
@@ -1464,11 +2073,69 @@ return user;`;
         await storage.updateMvpCodeScan(req.params.id, userId, counts);
       }
       
-      // Return enriched scan data
+      // Return enriched scan data (omit large SBOM blobs from JSON)
       res.json({
-        ...scan,
+        ...mvpScanPublicView(scan),
         ...counts,
       });
+    } catch (error: any) {
+      res.status(500).json({ message: error.message });
+    }
+  });
+
+  app.get("/api/mvp-scans/:id/sbom", requireAuth, async (req: any, res) => {
+    try {
+      const scan = await storage.getMvpCodeScan(req.params.id, req.user.id);
+      if (!scan) {
+        return res.status(404).json({ message: "Scan not found" });
+      }
+      const fmt = typeof req.query.format === "string" ? req.query.format : "cyclonedx";
+      if (fmt !== "cyclonedx" && fmt !== "spdx") {
+        return res.status(400).json({ message: "format must be cyclonedx or spdx" });
+      }
+      if (!scan.sbomGeneratedAt) {
+        return res.status(404).json({ message: "No SBOM available for this scan" });
+      }
+      const body = fmt === "cyclonedx" ? scan.sbomCycloneDxJson : scan.sbomSpdxJson;
+      if (!body) {
+        return res.status(404).json({ message: "SBOM payload missing" });
+      }
+      const filename = fmt === "cyclonedx" ? `sbom-${scan.id}-cyclonedx.json` : `sbom-${scan.id}-spdx.json`;
+      res.setHeader("Content-Type", "application/json; charset=utf-8");
+      res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+      res.json(body);
+    } catch (error: any) {
+      res.status(500).json({ message: error.message });
+    }
+  });
+
+  app.get("/api/mvp-scans/:id/upgrade-plan", requireAuth, async (req: any, res) => {
+    try {
+      const scan = await storage.getMvpCodeScan(req.params.id, req.user.id);
+      if (!scan) {
+        return res.status(404).json({ message: "Scan not found" });
+      }
+
+      const sbomJson = scan.sbomCycloneDxJson as Record<string, unknown> | null;
+      const components: Array<{ name: string; version: string; purl?: string }> =
+        sbomJson && Array.isArray((sbomJson as any).components)
+          ? (sbomJson as any).components.map((c: any) => ({
+              name: c.name ?? "",
+              version: c.version ?? "",
+              purl: c.purl ?? undefined,
+            }))
+          : [];
+
+      const allFindings = await storage.getFindingsByScan(req.params.id, req.user.id, "mvp");
+      const scaFindings = allFindings.filter(
+        (f) => f.category === "Dependency Vulnerability" || f.category === "Known Exploited Vulnerability",
+      );
+
+      const projectName =
+        scan.projectName || scan.repositoryUrl || `Scan ${scan.id.slice(0, 8)}`;
+
+      const plan = buildUpgradePlan(scan.id, projectName, components, scaFindings);
+      res.json(plan);
     } catch (error: any) {
       res.status(500).json({ message: error.message });
     }
@@ -1477,11 +2144,11 @@ return user;`;
   app.get("/api/mvp-scans/:id/findings", requireAuth, async (req: any, res) => {
     try {
       const scan = await storage.getMvpCodeScan(req.params.id, req.user.id);
-      if (!scan || scan.userId !== req.user.id) {
+      if (!scan) {
         return res.status(404).json({ message: "Scan not found" });
       }
       const findings = await storage.getFindingsByScan(req.params.id, req.user.id, "mvp");
-      res.json(findings);
+      res.json(enrichFindingsList(findings));
     } catch (error: any) {
       res.status(500).json({ message: error.message });
     }
@@ -1493,6 +2160,15 @@ return user;`;
       const scan = await storage.createMvpCodeScan({
         ...validatedData,
         userId: req.user!.id,
+        organizationId: req.user!.defaultOrganizationId ?? null,
+      });
+      void logAuditEvent({
+        userId: req.user!.id,
+        action: "mvp_scan.create",
+        resourceType: "mvp_scan",
+        resourceId: scan.id,
+        metadata: { projectName: scan.projectName },
+        req,
       });
       res.status(201).json(scan);
     } catch (error: any) {
@@ -1503,8 +2179,11 @@ return user;`;
   app.patch("/api/mvp-scans/:id", requireAuth, async (req: any, res) => {
     try {
       const scan = await storage.getMvpCodeScan(req.params.id, req.user.id);
-      if (!scan || scan.userId !== req.user.id) {
+      if (!scan) {
         return res.status(404).json({ message: "Scan not found" });
+      }
+      if (!(await storage.canMutateMvpCodeScan(req.user.id, scan))) {
+        return res.status(403).json({ message: "You do not have permission to modify this scan" });
       }
 
       // Only allow editing specific fields (not platform to avoid invalidating results)
@@ -1515,7 +2194,22 @@ return user;`;
         return res.status(400).json({ message: "No fields to update" });
       }
 
-      const updatedScan = await storage.updateMvpCodeScan(req.params.id, req.user.id, validatedData);
+      let payload: Record<string, unknown> = { ...validatedData };
+      if (validatedData.workflowMetadata != null) {
+        const prev =
+          scan.workflowMetadata && typeof scan.workflowMetadata === "object"
+            ? (scan.workflowMetadata as Record<string, unknown>)
+            : {};
+        payload = {
+          ...validatedData,
+          workflowMetadata: { ...prev, ...(validatedData.workflowMetadata as Record<string, unknown>) },
+        };
+      }
+
+      const updatedScan = await storage.updateMvpCodeScan(req.params.id, req.user.id, payload as any);
+      if (!updatedScan) {
+        return res.status(404).json({ message: "Scan not found" });
+      }
       res.json(updatedScan);
     } catch (error: any) {
       res.status(400).json({ message: error.message });
@@ -1525,11 +2219,22 @@ return user;`;
   app.delete("/api/mvp-scans/:id", requireAuth, async (req: any, res) => {
     try {
       const scan = await storage.getMvpCodeScan(req.params.id, req.user.id);
-      if (!scan || scan.userId !== req.user.id) {
+      if (!scan) {
         return res.status(404).json({ message: "Scan not found" });
+      }
+      if (!(await storage.canMutateMvpCodeScan(req.user.id, scan))) {
+        return res.status(403).json({ message: "You do not have permission to modify this scan" });
       }
 
       await storage.deleteMvpCodeScan(req.params.id, req.user.id);
+      void logAuditEvent({
+        userId: req.user.id,
+        action: "mvp_scan.delete",
+        resourceType: "mvp_scan",
+        resourceId: req.params.id,
+        metadata: { projectName: scan.projectName },
+        req,
+      });
       res.json({ success: true, message: "Scan deleted successfully" });
     } catch (error: any) {
       res.status(500).json({ message: error.message });
@@ -1539,8 +2244,11 @@ return user;`;
   app.patch("/api/mvp-scans/:id/cancel", requireAuth, async (req: any, res) => {
     try {
       const scan = await storage.getMvpCodeScan(req.params.id, req.user.id);
-      if (!scan || scan.userId !== req.user.id) {
+      if (!scan) {
         return res.status(404).json({ message: "Scan not found" });
+      }
+      if (!(await storage.canMutateMvpCodeScan(req.user.id, scan))) {
+        return res.status(403).json({ message: "You do not have permission to modify this scan" });
       }
 
       // Only allow cancelling if scan is in progress
@@ -1554,6 +2262,9 @@ return user;`;
         scanStatus: 'cancelling',
         scanStage: 'Cancellation requested...',
       });
+      if (!updatedScan) {
+        return res.status(404).json({ message: "Scan not found" });
+      }
       res.json({ message: "Cancellation requested", scan: updatedScan });
     } catch (error: any) {
       res.status(500).json({ message: error.message });
@@ -1565,6 +2276,9 @@ return user;`;
       const scan = await storage.getMvpCodeScan(req.params.id, req.user.id);
       if (!scan) {
         return res.status(404).json({ message: "Scan not found" });
+      }
+      if (!(await storage.canMutateMvpCodeScan(req.user.id, scan))) {
+        return res.status(403).json({ message: "You do not have permission to modify this scan" });
       }
 
       // Validate scan inputs before starting
@@ -1586,129 +2300,11 @@ return user;`;
         cancellationRequested: false,
       });
 
-      // Send scan start notification
-      await notifyScanStart(storage, scan.userId, scan.id, 'mvp', scan.projectName || 'MVP Code Scan');
-
-      // Progress callback to update database with scan progress
-      const progressCallback = async (progress: number, stage: string) => {
-        // Check if cancellation was requested
-        const currentScan = await storage.getMvpCodeScan(req.params.id, req.user.id);
-        if (currentScan?.cancellationRequested) {
-          throw new Error('Scan cancellation requested by user');
-        }
-
-        await storage.updateMvpCodeScan(req.params.id, req.user.id, {
-          scanProgress: progress,
-          scanStage: stage,
-        });
-      };
-
-      // Detect language from optional tech stack hint, repository URL, or default
-      const meta = scan.workflowMetadata as Record<string, unknown> | null | undefined;
-      const hint = typeof meta?.techStackHint === "string" ? meta.techStackHint.toLowerCase() : "";
-      let detectedLanguage: string;
-      if (hint.includes("python")) detectedLanguage = "python";
-      else if (hint.includes("java") && !hint.includes("javascript")) detectedLanguage = "java";
-      else if (hint.includes("go") || hint.includes("golang")) detectedLanguage = "go";
-      else if (hint.includes("rust")) detectedLanguage = "rust";
-      else if (hint.includes("ruby")) detectedLanguage = "ruby";
-      else if (hint.includes("php")) detectedLanguage = "php";
-      else if (scan.repositoryUrl.includes(".js") || scan.repositoryUrl.includes("javascript"))
-        detectedLanguage = "javascript";
-      else if (scan.repositoryUrl.includes(".py") || scan.repositoryUrl.includes("python"))
-        detectedLanguage = "python";
-      else detectedLanguage = "typescript";
-
-      // Start real scan in background (non-blocking)
-      scanMvpCode(
-        scan.repositoryUrl,
-        {
-          language: detectedLanguage,
-          framework: undefined, // Can be detected from repository if needed
-          environment: undefined, // Can be detected from repository if needed
-          userId: req.user.id,
-          scanId: scan.id,
-        },
-        progressCallback
-      ).then(async (result) => {
-        // Create findings from scan result
-        for (const vulnerability of result.vulnerabilities) {
-          await storage.createFinding({
-            userId: scan.userId,
-            title: vulnerability.title,
-            description: vulnerability.description,
-            severity: vulnerability.severity,
-            category: vulnerability.category,
-            asset: "Source Code",
-            cwe: vulnerability.cwe,
-            detected: new Date().toISOString(),
-            status: "open",
-            location: vulnerability.location,
-            remediation: vulnerability.remediation,
-            aiSuggestion: vulnerability.aiSuggestion,
-            riskScore: vulnerability.riskScore,
-            exploitabilityScore: vulnerability.exploitabilityScore,
-            impactScore: vulnerability.impactScore,
-            source: "mvp-scan",
-            mvpScanId: scan.id,
-            scanId: scan.id,
-            scanType: "mvp",
-          });
-        }
-
-        // Calculate severity counts
-        const criticalCount = result.vulnerabilities.filter(v => v.severity === 'CRITICAL').length;
-        const highCount = result.vulnerabilities.filter(v => v.severity === 'HIGH').length;
-        const mediumCount = result.vulnerabilities.filter(v => v.severity === 'MEDIUM').length;
-        const lowCount = result.vulnerabilities.filter(v => v.severity === 'LOW').length;
-
-        // Generate preview URL for QR code
-        const previewUrl = `${req.protocol}://${req.get('host')}/preview/${req.params.id}`;
-
-        // Update scan with completion status
-        await storage.updateMvpCodeScan(req.params.id, req.user.id, {
-          scanStatus: 'completed',
-          scanProgress: 100,
-          scanStage: 'Scan complete',
-          findingsCount: result.vulnerabilities.length,
-          criticalCount,
-          highCount,
-          mediumCount,
-          lowCount,
-          scannedAt: new Date(),
-          previewUrl,
-        });
-
-        // Send push notification for scan completion
-        await notifyScanComplete(
-          storage,
-          scan.userId,
-          scan.id,
-          'mvp',
-          scan.projectName || 'MVP Code Scan',
-          result.vulnerabilities.length
-        );
-      }).catch(async (error: any) => {
-        // Handle error and convert to user-friendly message
-        const scanError = handleScanError(error);
-        
-        // Log detailed error for debugging
-        console.error('MVP scan error:', formatErrorForLogging(error));
-        
-        // Check if this is a cancellation
-        const isCancellation = scanError.code === 'CANCELLED';
-        
-        // Update scan with error status
-        await storage.updateMvpCodeScan(req.params.id, req.user.id, {
-          scanStatus: isCancellation ? 'cancelled' : 'failed',
-          scanError: scanError.userMessage,
-          scanProgress: null,
-          scanStage: null,
-          cancellationRequested: false, // Reset cancellation flag
-        });
-        
-        // Log error
-        console.error(`MVP scan ${isCancellation ? 'cancelled' : 'failed'}:`, scanError.userMessage);
+      startMvpScanBackground({
+        scan,
+        userId: req.user.id,
+        scanId: req.params.id,
+        req,
       });
 
       res.json({ message: "Scan started" });
@@ -1721,8 +2317,11 @@ return user;`;
   app.post("/api/mvp-scans/:id/validate-upload", requireAuth, async (req: any, res) => {
     try {
       const scan = await storage.getMvpCodeScan(req.params.id, req.user.id);
-      if (!scan || scan.userId !== req.user.id) {
+      if (!scan) {
         return res.status(404).json({ message: "Scan not found" });
+      }
+      if (!(await storage.canMutateMvpCodeScan(req.user.id, scan))) {
+        return res.status(403).json({ message: "You do not have permission to modify this scan" });
       }
 
       // Simulate validation - in production this would analyze the entire codebase
@@ -1777,6 +2376,9 @@ return user;`;
       
       if (!scan) {
         return res.status(404).json({ message: "Scan not found" });
+      }
+      if (!(await storage.canMutateMvpCodeScan(req.user.id, scan))) {
+        return res.status(403).json({ message: "You do not have permission to modify this scan" });
       }
 
       // If uploading with fixes, mark all findings for this scan as resolved
@@ -1841,6 +2443,9 @@ return user;`;
       
       if (!scan) {
         return res.status(404).json({ message: "Scan not found" });
+      }
+      if (!(await storage.canMutateMvpCodeScan(req.user.id, scan))) {
+        return res.status(403).json({ message: "You do not have permission to modify this scan" });
       }
 
       // If uploading with fixes, mark all findings for this scan as resolved
@@ -1938,6 +2543,9 @@ return user;`;
       if (!scan) {
         return res.status(404).json({ message: "Scan not found" });
       }
+      if (!(await storage.canMutateMvpCodeScan(req.user.id, scan))) {
+        return res.status(403).json({ message: "You do not have permission to modify this scan" });
+      }
 
       // Update scan with app store info and initiate upload
       await storage.updateMvpCodeScan(req.params.id, req.user.id, { 
@@ -1995,12 +2603,12 @@ return user;`;
     try {
       const userId = req.user!.id;
       const scan = await storage.getWebAppScan(req.params.id, userId);
-      if (!scan || scan.userId !== userId) {
+      if (!scan) {
         return res.status(404).json({ message: "Scan not found" });
       }
       
       // Calculate real-time finding counts
-      const counts = await storage.getFindingCountsByScan(req.params.id, userId);
+      const counts = await storage.getFindingCountsByScan(req.params.id, userId, "web");
       
       // Always update scan record to keep it in sync
       if (scan.findingsCount !== counts.findingsCount || 
@@ -2024,11 +2632,65 @@ return user;`;
   app.get("/api/web-scans/:id/findings", requireAuth, async (req: any, res) => {
     try {
       const scan = await storage.getWebAppScan(req.params.id, req.user.id);
-      if (!scan || scan.userId !== req.user.id) {
+      if (!scan) {
         return res.status(404).json({ message: "Scan not found" });
       }
       const findings = await storage.getFindingsByScan(req.params.id, req.user.id, "web");
-      res.json(findings);
+      res.json(enrichFindingsList(findings));
+    } catch (error: any) {
+      res.status(500).json({ message: error.message });
+    }
+  });
+
+  /** SAST (MVP repo) ↔ DAST (web) correlation for the same linked repository. */
+  app.get("/api/web-scans/:id/sast-dast-correlation", requireAuth, async (req: any, res) => {
+    try {
+      const userId = req.user!.id;
+      const webScan = await storage.getWebAppScan(req.params.id, userId);
+      if (!webScan) {
+        return res.status(404).json({ message: "Scan not found" });
+      }
+      const meta = webScan.workflowMetadata as Record<string, unknown> | null | undefined;
+      const repoRaw =
+        typeof meta?.sourceRepositoryUrl === "string" ? meta.sourceRepositoryUrl.trim() : "";
+      if (!repoRaw) {
+        return res.json({
+          linked: false as const,
+          reason: "no_source_repository" as const,
+        });
+      }
+      const targetNorm = normalizeRepositoryUrl(repoRaw);
+      const mvpScans = await storage.getAllMvpCodeScans(userId);
+      const sameRepo = mvpScans.filter((s) => normalizeRepositoryUrl(s.repositoryUrl) === targetNorm);
+      if (sameRepo.length === 0) {
+        return res.json({
+          linked: false as const,
+          reason: "no_mvp_scan_for_repo" as const,
+          repositoryUrl: repoRaw,
+        });
+      }
+      const completed = sameRepo.filter((s: MvpCodeScan) => s.scanStatus === "completed");
+      const pool: MvpCodeScan[] = completed.length > 0 ? completed : sameRepo;
+      const mvpScan = pool.sort(
+        (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+      )[0]!;
+
+      const [dastRows, sastRows] = await Promise.all([
+        storage.getFindingsByScan(webScan.id, userId, "web"),
+        storage.getFindingsByScan(mvpScan.id, userId, "mvp"),
+      ]);
+      const { pairs, dastOnly, sastOnly, summary } = correlateSastDastFindings(dastRows, sastRows);
+
+      return res.json({
+        linked: true as const,
+        repositoryUrl: repoRaw,
+        mvpScanId: mvpScan.id,
+        mvpProjectName: mvpScan.projectName,
+        pairs,
+        dastOnly,
+        sastOnly,
+        summary,
+      });
     } catch (error: any) {
       res.status(500).json({ message: error.message });
     }
@@ -2040,6 +2702,7 @@ return user;`;
       const scan = await storage.createWebAppScan({
         ...validatedData,
         userId: req.user!.id,
+        organizationId: req.user!.defaultOrganizationId ?? null,
       });
       res.status(201).json(scan);
     } catch (error: any) {
@@ -2050,8 +2713,11 @@ return user;`;
   app.patch("/api/web-scans/:id", requireAuth, async (req: any, res) => {
     try {
       const scan = await storage.getWebAppScan(req.params.id, req.user.id);
-      if (!scan || scan.userId !== req.user.id) {
+      if (!scan) {
         return res.status(404).json({ message: "Scan not found" });
+      }
+      if (!(await storage.canMutateWebAppScan(req.user.id, scan))) {
+        return res.status(403).json({ message: "You do not have permission to modify this scan" });
       }
 
       // Only allow editing specific fields (not hostingPlatform to avoid invalidating results)
@@ -2063,6 +2729,9 @@ return user;`;
       }
 
       const updatedScan = await storage.updateWebAppScan(req.params.id, req.user.id, validatedData);
+      if (!updatedScan) {
+        return res.status(404).json({ message: "Scan not found" });
+      }
       res.json(updatedScan);
     } catch (error: any) {
       res.status(400).json({ message: error.message });
@@ -2072,8 +2741,11 @@ return user;`;
   app.delete("/api/web-scans/:id", requireAuth, async (req: any, res) => {
     try {
       const scan = await storage.getWebAppScan(req.params.id, req.user.id);
-      if (!scan || scan.userId !== req.user.id) {
+      if (!scan) {
         return res.status(404).json({ message: "Scan not found" });
+      }
+      if (!(await storage.canMutateWebAppScan(req.user.id, scan))) {
+        return res.status(403).json({ message: "You do not have permission to modify this scan" });
       }
 
       await storage.deleteWebAppScan(req.params.id, req.user.id);
@@ -2086,8 +2758,11 @@ return user;`;
   app.patch("/api/web-scans/:id/cancel", requireAuth, async (req: any, res) => {
     try {
       const scan = await storage.getWebAppScan(req.params.id, req.user.id);
-      if (!scan || scan.userId !== req.user.id) {
+      if (!scan) {
         return res.status(404).json({ message: "Scan not found" });
+      }
+      if (!(await storage.canMutateWebAppScan(req.user.id, scan))) {
+        return res.status(403).json({ message: "You do not have permission to modify this scan" });
       }
 
       // Only allow cancelling if scan is in progress
@@ -2101,6 +2776,9 @@ return user;`;
         scanStatus: 'cancelling',
         scanStage: 'Cancellation requested...',
       });
+      if (!updatedScan) {
+        return res.status(404).json({ message: "Scan not found" });
+      }
       res.json({ message: "Cancellation requested", scan: updatedScan });
     } catch (error: any) {
       res.status(500).json({ message: error.message });
@@ -2112,6 +2790,9 @@ return user;`;
       const scan = await storage.getWebAppScan(req.params.id, req.user.id);
       if (!scan) {
         return res.status(404).json({ message: "Scan not found" });
+      }
+      if (!(await storage.canMutateWebAppScan(req.user.id, scan))) {
+        return res.status(403).json({ message: "You do not have permission to modify this scan" });
       }
 
       // Validate scan inputs before starting
@@ -2168,6 +2849,9 @@ return user;`;
       };
 
       // Start real scan in background (non-blocking)
+      const webMeta = scan.workflowMetadata as Record<string, unknown> | null | undefined;
+      const webMods = resolvedSecurityModules(webMeta, ["SAST", "DAST", "SCA", "Secrets"]);
+
       scanWebApp(
         scan.appUrl,
         {
@@ -2176,6 +2860,7 @@ return user;`;
           password: scan.authPassword || undefined, // Note: In production, decrypt this
           userId: req.user.id,
           scanId: scan.id,
+          securityModules: webMods,
         },
         progressCallback
       ).then(async (result) => {
@@ -2201,6 +2886,7 @@ return user;`;
             webScanId: scan.id,
             scanId: scan.id,
             scanType: "web",
+            dastProof: vulnerability.dastProof ? JSON.stringify(vulnerability.dastProof) : undefined,
           });
         }
 
@@ -2261,12 +2947,73 @@ return user;`;
     }
   });
 
+  
+  /** Generate demo proof-based DAST findings for a web scan (dev/demo only). */
+  app.post("/api/web-scans/:id/demo-proof-dast", requireAuth, async (req: any, res) => {
+    try {
+      const scan = await storage.getWebAppScan(req.params.id, req.user.id);
+      if (!scan) return res.status(404).json({ message: "Scan not found" });
+
+      const { demoProofBasedDastFindings } = await import("./services/proofBasedDastService");
+      const demoFindings = demoProofBasedDastFindings(scan.appUrl || "https://example.com");
+      const created = [];
+      for (const v of demoFindings) {
+        const f = await storage.createFinding({
+          userId: scan.userId,
+          title: v.title,
+          description: v.description,
+          severity: v.severity,
+          category: v.category,
+          asset: "Web Application",
+          cwe: v.cwe,
+          detected: new Date().toISOString(),
+          status: "open",
+          location: v.location,
+          remediation: v.remediation,
+          aiSuggestion: v.aiSuggestion,
+          riskScore: v.riskScore,
+          exploitabilityScore: v.exploitabilityScore,
+          impactScore: v.impactScore,
+          source: "web-scan",
+          webScanId: scan.id,
+          scanId: scan.id,
+          scanType: "web",
+          dastProof: v.dastProof ? JSON.stringify(v.dastProof) : undefined,
+        });
+        created.push(f);
+      }
+
+      const criticalCount = demoFindings.filter(v => v.severity === "CRITICAL").length;
+      const highCount = demoFindings.filter(v => v.severity === "HIGH").length;
+      const mediumCount = demoFindings.filter(v => v.severity === "MEDIUM").length;
+      const lowCount = demoFindings.filter(v => v.severity === "LOW").length;
+      await storage.updateWebAppScan(req.params.id, req.user.id, {
+        scanStatus: "completed",
+        scanProgress: 100,
+        scanStage: "Proof-based DAST demo complete",
+        findingsCount: (scan.findingsCount || 0) + demoFindings.length,
+        criticalCount: (scan.criticalCount || 0) + criticalCount,
+        highCount: (scan.highCount || 0) + highCount,
+        mediumCount: (scan.mediumCount || 0) + mediumCount,
+        lowCount: (scan.lowCount || 0) + lowCount,
+        scannedAt: new Date(),
+      });
+
+      res.json({ message: `Created ${created.length} proof-based DAST findings`, count: created.length });
+    } catch (error: any) {
+      res.status(500).json({ message: error.message });
+    }
+  });
+
   // Validate fixes before uploading web app scan
   app.post("/api/web-scans/:id/validate-upload", requireAuth, async (req: any, res) => {
     try {
       const scan = await storage.getWebAppScan(req.params.id, req.user.id);
-      if (!scan || scan.userId !== req.user.id) {
+      if (!scan) {
         return res.status(404).json({ message: "Scan not found" });
+      }
+      if (!(await storage.canMutateWebAppScan(req.user.id, scan))) {
+        return res.status(403).json({ message: "You do not have permission to modify this scan" });
       }
 
       // Simulate validation - in production this would analyze the entire codebase
@@ -2320,6 +3067,9 @@ return user;`;
       
       if (!scan) {
         return res.status(404).json({ message: "Scan not found" });
+      }
+      if (!(await storage.canMutateWebAppScan(req.user.id, scan))) {
+        return res.status(403).json({ message: "You do not have permission to modify this scan" });
       }
 
       // If uploading with fixes, mark all findings for this scan as resolved
@@ -2381,6 +3131,9 @@ return user;`;
       
       if (!scan) {
         return res.status(404).json({ message: "Scan not found" });
+      }
+      if (!(await storage.canMutateWebAppScan(req.user.id, scan))) {
+        return res.status(403).json({ message: "You do not have permission to modify this scan" });
       }
 
       // If uploading with fixes, mark all findings for this scan as resolved
@@ -3545,7 +4298,7 @@ return user;`;
   app.get("/api/pipeline-scans/:id", requireAuth, async (req: any, res) => {
     try {
       const scan = await storage.getPipelineScan(req.params.id, req.user.id);
-      if (!scan || scan.userId !== req.user.id) {
+      if (!scan) {
         return res.status(404).json({ message: "Pipeline scan not found" });
       }
       res.json(scan);
@@ -3750,7 +4503,7 @@ return user;`;
   app.get("/api/container-scans/:id", requireAuth, async (req: any, res) => {
     try {
       const scan = await storage.getContainerScan(req.params.id, req.user.id);
-      if (!scan || scan.userId !== req.user.id) {
+      if (!scan) {
         return res.status(404).json({ message: "Container scan not found" });
       }
       res.json(scan);
@@ -3766,140 +4519,8 @@ return user;`;
         ...validatedData,
         userId: req.user!.id,
       });
-      
-      // Auto-complete scan after simulated multi-step process (6 seconds total)
-      setTimeout(async () => {
-        const mockFindings = Math.floor(Math.random() * 15) + 5;
-        const critical = Math.floor(Math.random() * 4);
-        const high = Math.floor(Math.random() * 6);
-        const medium = Math.floor(Math.random() * 8);
-        const low = mockFindings - critical - high - medium;
 
-        // Create findings for container scan
-        const mockFindingTemplates = [
-          { title: "Vulnerable Base Image", category: "Container Security", cwe: "1395", severity: "CRITICAL" },
-          { title: "Exposed Secrets in Layers", category: "Secrets Management", cwe: "798", severity: "CRITICAL" },
-          { title: "Excessive Container Privileges", category: "Access Control", cwe: "250", severity: "HIGH" },
-          { title: "Missing Security Scanning", category: "Security", cwe: "1127", severity: "HIGH" },
-          { title: "Outdated Container Dependencies", category: "Dependencies", cwe: "1104", severity: "MEDIUM" },
-          { title: "Improper Layer Caching", category: "Configuration", cwe: "16", severity: "MEDIUM" },
-          { title: "Missing Container Labels", category: "Configuration", cwe: "1188", severity: "LOW" },
-        ];
-
-        let createdCount = 0;
-        for (let i = 0; i < critical && createdCount < mockFindings; i++) {
-          const template = mockFindingTemplates[createdCount % mockFindingTemplates.length];
-          await storage.createFinding({
-            userId: scan.userId,
-            title: template.title,
-            description: `Critical container security issue detected that requires immediate attention.`,
-            severity: "CRITICAL",
-            category: template.category,
-            asset: `${scan.imageName}:${scan.imageTag}`,
-            cwe: template.cwe,
-            detected: new Date().toISOString(),
-            status: "open",
-            location: `Layer ${Math.floor(Math.random() * 10) + 1}`,
-            remediation: `Update base image and rebuild container to address this critical security issue.`,
-            aiSuggestion: `AI suggests: Use minimal base images and implement proper secrets management in your containers.`,
-            riskScore: Math.floor(Math.random() * 20) + 80,
-            source: "container-scan",
-            containerScanId: scan.id,
-            scanId: scan.id,
-            scanType: "container",
-          });
-          createdCount++;
-        }
-        for (let i = 0; i < high && createdCount < mockFindings; i++) {
-          const template = mockFindingTemplates[createdCount % mockFindingTemplates.length];
-          await storage.createFinding({
-            userId: scan.userId,
-            title: template.title,
-            description: `High priority container security issue that should be addressed soon.`,
-            severity: "HIGH",
-            category: template.category,
-            asset: `${scan.imageName}:${scan.imageTag}`,
-            cwe: template.cwe,
-            detected: new Date().toISOString(),
-            status: "open",
-            location: `Layer ${Math.floor(Math.random() * 10) + 1}`,
-            remediation: `Review and update container configuration to improve security.`,
-            aiSuggestion: `AI suggests: Follow container security best practices and minimize attack surface.`,
-            riskScore: Math.floor(Math.random() * 20) + 60,
-            source: "container-scan",
-            containerScanId: scan.id,
-            scanId: scan.id,
-            scanType: "container",
-          });
-          createdCount++;
-        }
-        for (let i = 0; i < medium && createdCount < mockFindings; i++) {
-          const template = mockFindingTemplates[createdCount % mockFindingTemplates.length];
-          await storage.createFinding({
-            userId: scan.userId,
-            title: template.title,
-            description: `Medium priority container security issue.`,
-            severity: "MEDIUM",
-            category: template.category,
-            asset: `${scan.imageName}:${scan.imageTag}`,
-            cwe: template.cwe,
-            detected: new Date().toISOString(),
-            status: "open",
-            location: `Layer ${Math.floor(Math.random() * 10) + 1}`,
-            remediation: `Review and improve container configuration.`,
-            aiSuggestion: `AI suggests: Implement container security scanning in your CI/CD pipeline.`,
-            riskScore: Math.floor(Math.random() * 20) + 40,
-            source: "container-scan",
-            containerScanId: scan.id,
-            scanId: scan.id,
-            scanType: "container",
-          });
-          createdCount++;
-        }
-        for (let i = 0; i < low && createdCount < mockFindings; i++) {
-          const template = mockFindingTemplates[createdCount % mockFindingTemplates.length];
-          await storage.createFinding({
-            userId: scan.userId,
-            title: template.title,
-            description: `Low priority container security issue.`,
-            severity: "LOW",
-            category: template.category,
-            asset: `${scan.imageName}:${scan.imageTag}`,
-            cwe: template.cwe,
-            detected: new Date().toISOString(),
-            status: "open",
-            location: `Layer ${Math.floor(Math.random() * 10) + 1}`,
-            remediation: `Consider improving container metadata and documentation.`,
-            aiSuggestion: `AI suggests: Add proper labels and documentation to your containers.`,
-            riskScore: Math.floor(Math.random() * 20) + 10,
-            source: "container-scan",
-            containerScanId: scan.id,
-            scanId: scan.id,
-            scanType: "container",
-          });
-          createdCount++;
-        }
-
-        await storage.updateContainerScan(scan.id, scan.userId, {
-          scanStatus: 'completed',
-          scannedAt: new Date(),
-          findingsCount: mockFindings,
-          criticalCount: critical,
-          highCount: high,
-          mediumCount: medium,
-          lowCount: low,
-        });
-
-        // Send push notification for scan completion
-        await notifyScanComplete(
-          storage,
-          scan.userId,
-          scan.id,
-          'container',
-          'Container Scan',
-          mockFindings
-        );
-      }, 6000);
+      void runContainerImageLayerScanJob(scan).catch((e) => console.error("[container-scan] job", e));
 
       res.status(201).json(scan);
     } catch (error: any) {
@@ -3955,7 +4576,7 @@ return user;`;
   app.get("/api/network-scans/:id", requireAuth, async (req: any, res) => {
     try {
       const scan = await storage.getNetworkScan(req.params.id, req.user.id);
-      if (!scan || scan.userId !== req.user.id) {
+      if (!scan) {
         return res.status(404).json({ message: "Network scan not found" });
       }
       res.json(scan);
@@ -4127,7 +4748,7 @@ return user;`;
   app.get("/api/linter-scans/:id", requireAuth, async (req: any, res) => {
     try {
       const scan = await storage.getLinterScan(req.params.id, req.user.id);
-      if (!scan || scan.userId !== req.user.id) {
+      if (!scan) {
         return res.status(404).json({ message: "Linter scan not found" });
       }
       res.json(scan);
@@ -6500,6 +7121,7 @@ return user;`;
       const scan = await storage.createScheduledScan({
         ...validatedData,
         userId: req.user.id,
+        nextRunAt: computeInitialNextRunAt(),
       });
       res.status(201).json(scan);
     } catch (error: any) {
@@ -6514,7 +7136,23 @@ return user;`;
   app.patch("/api/scheduled-scans/:id", requireAuth, async (req: any, res) => {
     try {
       const validatedData = insertScheduledScanSchema.partial().parse(req.body);
-      const scan = await storage.updateScheduledScan(req.params.id, req.user.id, validatedData);
+      const existing = await storage.getScheduledScan(req.params.id, req.user.id);
+      if (!existing) {
+        return res.status(404).json({ message: "Scheduled scan not found" });
+      }
+      const freqChanged =
+        validatedData.frequency !== undefined && validatedData.frequency !== existing.frequency;
+      const cronChanged =
+        validatedData.cronExpression !== undefined &&
+        validatedData.cronExpression !== existing.cronExpression;
+      let merged = { ...validatedData };
+      if (freqChanged || cronChanged) {
+        merged = { ...merged, nextRunAt: computeInitialNextRunAt() };
+      }
+      if (validatedData.isActive === true && !existing.nextRunAt) {
+        merged = { ...merged, nextRunAt: computeInitialNextRunAt() };
+      }
+      const scan = await storage.updateScheduledScan(req.params.id, req.user.id, merged);
       if (!scan) {
         return res.status(404).json({ message: "Scheduled scan not found" });
       }

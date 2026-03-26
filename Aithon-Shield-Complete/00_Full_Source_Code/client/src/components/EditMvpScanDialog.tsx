@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useMemo } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -20,18 +20,28 @@ import {
   FormMessage,
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import type { MvpCodeScan } from "@shared/schema";
 
-const editScanSchema = z.object({
-  projectName: z.string().min(1, "Project name is required"),
-  repositoryUrl: z.string().url("Must be a valid URL"),
-  branch: z.string().min(1, "Branch is required"),
-});
+function buildEditScanSchema(strictProdScanUrls: boolean) {
+  return z.object({
+    projectName: z.string().min(1, "Project name is required"),
+    repositoryUrl: strictProdScanUrls
+      ? z
+          .string()
+          .min(1, "Repository URL is required")
+          .refine(
+            (s) => /demo/i.test(s) || z.string().url().safeParse(s).success,
+            'Must be a valid URL or contain "demo" for trial use.',
+          )
+      : z.string().min(1, "Repository URL is required"),
+    branch: z.string().min(1, "Branch is required"),
+  });
+}
 
-type EditScanFormData = z.infer<typeof editScanSchema>;
+type EditScanFormData = z.infer<ReturnType<typeof buildEditScanSchema>>;
 
 interface EditMvpScanDialogProps {
   open: boolean;
@@ -42,8 +52,15 @@ interface EditMvpScanDialogProps {
 export function EditMvpScanDialog({ open, onOpenChange, scan }: EditMvpScanDialogProps) {
   const { toast } = useToast();
 
+  const { data: appConfig } = useQuery<{ demoMode: boolean }>({
+    queryKey: ["/api/app-config"],
+  });
+  const strictProdScanUrls = import.meta.env.PROD && appConfig?.demoMode !== true;
+  const editScanSchema = useMemo(() => buildEditScanSchema(strictProdScanUrls), [strictProdScanUrls]);
+  const editResolver = useMemo(() => zodResolver(editScanSchema), [editScanSchema]);
+
   const form = useForm<EditScanFormData>({
-    resolver: zodResolver(editScanSchema),
+    resolver: editResolver,
     defaultValues: {
       projectName: scan.projectName,
       repositoryUrl: scan.repositoryUrl,

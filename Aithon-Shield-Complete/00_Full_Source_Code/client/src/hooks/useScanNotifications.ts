@@ -2,19 +2,23 @@ import { useEffect, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import { useLocation } from "wouter";
-import type { MobileAppScan, MvpCodeScan, WebAppScan } from "@shared/schema";
+import type { ContainerScan, MobileAppScan, MvpCodeScan, WebAppScan } from "@shared/schema";
 
 const SESSION_SCANS_KEY = "aegis_session_scans";
 
 interface SessionScan {
   id: string;
-  type: "mvp" | "mobile" | "web";
+  type: "mvp" | "mobile" | "web" | "container" | "api";
   name: string;
   createdAt: number;
 }
 
 // Utility functions to manage session scans
-export function addSessionScan(id: string, type: "mvp" | "mobile" | "web", name: string) {
+export function addSessionScan(
+  id: string,
+  type: "mvp" | "mobile" | "web" | "container" | "api",
+  name: string,
+) {
   const scans = getSessionScans();
   scans.push({ id, type, name, createdAt: Date.now() });
   localStorage.setItem(SESSION_SCANS_KEY, JSON.stringify(scans));
@@ -56,6 +60,11 @@ export function useScanNotifications() {
     refetchInterval: 2000,
   });
 
+  const { data: containerScans = [] } = useQuery<ContainerScan[]>({
+    queryKey: ["/api/container-scans"],
+    refetchInterval: 2000,
+  });
+
   useEffect(() => {
     const sessionScans = getSessionScans();
     
@@ -66,23 +75,28 @@ export function useScanNotifications() {
         return;
       }
 
-      let scan: MvpCodeScan | MobileAppScan | WebAppScan | undefined;
-      
+      let scan: MvpCodeScan | MobileAppScan | WebAppScan | ContainerScan | undefined;
+
       if (sessionScan.type === "mvp") {
         scan = mvpScans.find(s => s.id === sessionScan.id);
       } else if (sessionScan.type === "mobile") {
         scan = mobileScans.find(s => s.id === sessionScan.id);
       } else if (sessionScan.type === "web") {
         scan = webScans.find(s => s.id === sessionScan.id);
+      } else if (sessionScan.type === "container") {
+        scan = containerScans.find(s => s.id === sessionScan.id);
       }
 
       // If scan is completed, show notification
       if (scan && scan.scanStatus === "completed") {
-        const scanTypeLabel = sessionScan.type === "mvp" 
-          ? "MVP Code Scan" 
-          : sessionScan.type === "mobile" 
-          ? "Mobile App Scan" 
-          : "Web App Scan";
+        const scanTypeLabel =
+          sessionScan.type === "mvp"
+            ? "MVP Code Scan"
+            : sessionScan.type === "mobile"
+              ? "Mobile App Scan"
+              : sessionScan.type === "web"
+                ? "Web App Scan"
+                : "Container image scan";
 
         const findingsCount = scan.findingsCount || 0;
         const criticalCount = scan.criticalCount || 0;
@@ -98,5 +112,5 @@ export function useScanNotifications() {
         removeSessionScan(sessionScan.id);
       }
     });
-  }, [mvpScans, mobileScans, webScans, toast, setLocation]);
+  }, [mvpScans, mobileScans, webScans, containerScans, toast, setLocation]);
 }

@@ -4,9 +4,10 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
-import { CheckCircle, XCircle, AlertTriangle, FileText, Shield, Download, Eye, ExternalLink } from "lucide-react";
+import { CheckCircle, XCircle, AlertTriangle, FileText, Shield, Download, Eye, ExternalLink, FileJson } from "lucide-react";
 import { useLocation } from "wouter";
 import { useToast } from "@/hooks/use-toast";
+import { fetchWithNetworkHint } from "@/lib/apiFetch";
 
 interface ComplianceControl {
   id: string;
@@ -148,6 +149,94 @@ export default function Compliance() {
   const [, setLocation] = useLocation();
   const { toast } = useToast();
   const [selectedFramework, setSelectedFramework] = useState<ComplianceFramework | null>(null);
+  const [evidenceDownloading, setEvidenceDownloading] = useState(false);
+  const [vexDownloading, setVexDownloading] = useState(false);
+
+  const handleDownloadVexWorkspace = async () => {
+    setVexDownloading(true);
+    try {
+      const res = await fetch("/api/vex/document", { credentials: "include" });
+      if (!res.ok) {
+        const text = await res.text();
+        let msg = text || res.statusText;
+        try {
+          const j = JSON.parse(text) as { message?: string; hint?: string };
+          if (typeof j?.message === "string" && j.message) msg = j.message;
+          if (typeof j?.hint === "string" && j.hint.trim()) msg = `${msg}. ${j.hint.trim()}`;
+        } catch {
+          if (msg.length > 240) msg = `${msg.slice(0, 240)}…`;
+        }
+        throw new Error(msg);
+      }
+      const blob = await res.blob();
+      const cd = res.headers.get("Content-Disposition");
+      const m = /filename="([^"]+)"/.exec(cd ?? "");
+      const filename = m?.[1] ?? `aithon-vex-workspace_${Date.now()}.json`;
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+      toast({
+        title: "VEX document downloaded",
+        description: "CycloneDX-style JSON from findings that mention CVE IDs.",
+      });
+    } catch (e: unknown) {
+      toast({
+        title: "VEX download failed",
+        description: e instanceof Error ? e.message : String(e),
+        variant: "destructive",
+      });
+    } finally {
+      setVexDownloading(false);
+    }
+  };
+
+  const handleDownloadEvidencePackage = async () => {
+    setEvidenceDownloading(true);
+    try {
+      const res = await fetchWithNetworkHint("/api/compliance/evidence-package", { credentials: "include" });
+      if (!res.ok) {
+        const text = await res.text();
+        let msg = text || res.statusText;
+        try {
+          const j = JSON.parse(text) as { message?: string; hint?: string };
+          if (typeof j?.message === "string" && j.message) msg = j.message;
+          if (typeof j?.hint === "string" && j.hint.trim()) msg = `${msg}. ${j.hint.trim()}`;
+        } catch {
+          if (msg.length > 240) msg = `${msg.slice(0, 240)}…`;
+        }
+        throw new Error(msg);
+      }
+      const blob = await res.blob();
+      const cd = res.headers.get("Content-Disposition");
+      const m = /filename="([^"]+)"/.exec(cd ?? "");
+      const filename = m?.[1] ?? `aithon-compliance-evidence_${Date.now()}.zip`;
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+      toast({
+        title: "Evidence package downloaded",
+        description: "ZIP includes findings, audit events, SLA summary, and risk exceptions.",
+      });
+    } catch (e: unknown) {
+      toast({
+        title: "Download failed",
+        description: e instanceof Error ? e.message : String(e),
+        variant: "destructive",
+      });
+    } finally {
+      setEvidenceDownloading(false);
+    }
+  };
 
   const handleExportReport = (frameworkId: string, frameworkName: string) => {
     toast({
@@ -195,57 +284,79 @@ export default function Compliance() {
 
   return (
     <div className="space-y-8">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Compliance & Standards</h1>
           <p className="text-muted-foreground mt-1">
             Track your security posture against industry frameworks
           </p>
         </div>
-        <Button 
-          onClick={() => {
-            toast({
-              title: "Export All Reports",
-              description: "Generating comprehensive compliance report for all frameworks...",
-            });
-
-            // Generate comprehensive report with all frameworks
-            setTimeout(() => {
-              const allFrameworksData = {
-                title: "Aithon Shield - Comprehensive Compliance Report",
-                generatedAt: new Date().toISOString(),
-                frameworks: complianceFrameworks.map(f => ({
-                  name: f.name,
-                  description: f.description,
-                  coverage: f.coverage,
-                  status: f.status,
-                  passed: f.passed,
-                  failed: f.failed,
-                  controls: f.controls,
-                })),
-              };
-
-              const blob = new Blob([JSON.stringify(allFrameworksData, null, 2)], { type: 'application/json' });
-              const url = window.URL.createObjectURL(blob);
-              const a = document.createElement('a');
-              a.href = url;
-              a.download = `compliance_all_frameworks_${Date.now()}.json`;
-              document.body.appendChild(a);
-              a.click();
-              window.URL.revokeObjectURL(url);
-              document.body.removeChild(a);
-
+        <div className="flex flex-wrap gap-2 shrink-0">
+          <Button
+            variant="default"
+            onClick={() => void handleDownloadEvidencePackage()}
+            disabled={evidenceDownloading}
+            data-testid="button-compliance-evidence-package"
+          >
+            <Download className="w-4 h-4 mr-2" />
+            {evidenceDownloading ? "Preparing ZIP…" : "Evidence package (ZIP)"}
+          </Button>
+          <Button
+            variant="secondary"
+            onClick={() => void handleDownloadVexWorkspace()}
+            disabled={vexDownloading}
+            data-testid="button-compliance-vex-workspace"
+          >
+            <FileJson className="w-4 h-4 mr-2" />
+            {vexDownloading ? "Building VEX…" : "VEX document (JSON)"}
+          </Button>
+          <Button
+            variant="outline"
+            onClick={() => {
               toast({
-                title: "Export Complete",
-                description: "All compliance reports have been downloaded.",
+                title: "Export All Reports",
+                description: "Generating comprehensive compliance report for all frameworks...",
               });
-            }, 2000);
-          }}
-          data-testid="button-export-all"
-        >
-          <Download className="w-4 h-4 mr-2" />
-          Export All
-        </Button>
+
+              setTimeout(() => {
+                const allFrameworksData = {
+                  title: "Aithon Shield - Comprehensive Compliance Report",
+                  generatedAt: new Date().toISOString(),
+                  frameworks: complianceFrameworks.map((f) => ({
+                    name: f.name,
+                    description: f.description,
+                    coverage: f.coverage,
+                    status: f.status,
+                    passed: f.passed,
+                    failed: f.failed,
+                    controls: f.controls,
+                  })),
+                };
+
+                const blob = new Blob([JSON.stringify(allFrameworksData, null, 2)], {
+                  type: "application/json",
+                });
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement("a");
+                a.href = url;
+                a.download = `compliance_all_frameworks_${Date.now()}.json`;
+                document.body.appendChild(a);
+                a.click();
+                window.URL.revokeObjectURL(url);
+                document.body.removeChild(a);
+
+                toast({
+                  title: "Export Complete",
+                  description: "All compliance reports have been downloaded.",
+                });
+              }, 2000);
+            }}
+            data-testid="button-export-all"
+          >
+            <Download className="w-4 h-4 mr-2" />
+            Export All
+          </Button>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">

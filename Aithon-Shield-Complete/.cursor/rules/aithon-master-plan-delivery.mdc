@@ -1,0 +1,74 @@
+---
+description: Master plan delivery — one feature at a time, Category 1/2, docs, testing, user verification gate
+globs:
+  - "**/23_Documentation/MASTER-PLAN-PHASES/**"
+  - "**/00_Full_Source_Code/**"
+---
+
+# Aithon Shield — Master plan delivery workflow
+
+## Terminal and commands (non-negotiable)
+
+**Canonical rule:** `no-user-terminal-commands.mdc` in this folder (`alwaysApply: true`) — applies in every chat for this repo.
+
+Summary: the user never runs shell commands; the agent runs them via the Shell tool and records outcomes in feature docs. Do not tell the product owner to “run X in the terminal” or paste commands for them.
+
+## Delivery rule
+
+Implement **one feature at a time**. Do **not** start the next feature until the user has **verified** the current one (see `User verification` in that feature’s doc).
+
+## Category labels (required in every feature doc)
+
+Use exactly one of these per feature (or **Both** if the change spans UI and API):
+
+- **Category 1 — Frontend (UI)**  
+  User-visible changes: pages, components, copy, layout, client-side flows. Anything the user can see or click in the browser.
+
+- **Category 2 — Backend**  
+  Server, database, APIs, auth, jobs, integrations, schema, MCP tools. No direct UI change, or UI is unchanged and only data/behavior behind it changes.
+
+- **Both**  
+  Explicitly list which parts are Category 1 vs Category 2 in sub-bullets.
+
+## Documentation (required for every feature)
+
+For each feature, maintain a file under:
+
+`Aithon-Shield-Complete/23_Documentation/MASTER-PLAN-PHASES/features/<FEATURE-ID>.md`
+
+Use the template `TEMPLATE-FEATURE.md` in the same folder. Each doc **must** include:
+
+1. Feature ID, name, phase, categories  
+2. **User-facing summary** (what changed)  
+3. **Technical summary** (files, schema, env)  
+4. **Manual testing steps** (numbered, reproducible)  
+5. **Automated / agent testing performed** (commands run, results — honest if not run)  
+6. **User verification** checklist (unchecked until user confirms)  
+7. **Rollback / notes** if relevant  
+
+## After implementing a feature (core rules — every time)
+
+1. **Category** — State **Category 1**, **Category 2**, or **Both** (with sub-bullets if Both) in the feature doc and in the reply to the user.  
+2. **Documentation** — Create or update `features/<FEATURE-ID>.md` with full sections from `TEMPLATE-FEATURE.md` (user summary, technical summary, manual testing steps, rollback if needed).  
+3. **Testing steps** — Document numbered **manual** testing steps in that file (what a human can validate in the app / API).  
+4. **Agent testing results** — Run checks via Shell (with permission); fill the **Automated / agent testing performed** table with commands and **pass / fail / not run** (never fake success). For new **`/api`** routes, run the relevant **`npm run verify:*`** script if one exists (**`verify:risk-exceptions-route`**, **`verify:compliance-evidence`** with a **running** server on `PORT`, etc.) and, when possible, one **`curl`** against the **full dev server** (Express + Vite) to confirm **401/200** or expected binary response — not **`{"message":"API route not found"}`** from `server/vite.ts` (stale Node process; restart dev server after pulling changes).  
+5. **Status** — Update `features/_STATUS.md` to `implemented — pending user verification`.  
+6. **Reply** — Summarize feature ID, category, doc path, what you ran, and what remains for the user to verify in the UI (no terminal instructions for them).  
+7. **Stop** — Do not implement the next feature until the user confirms verification.
+
+### Dev server: `API route not found` (permanent pattern)
+
+- **Symptom:** JSON with `message: "API route not found"`, optional `code: "API_ROUTE_NOT_REGISTERED_OR_STALE_SERVER"` and `hint` — from `server/vite.ts` when **no Express handler** matched that `/api/...` path (almost always the **Node process started before the new route existed**).
+- **Developer fix:** Fully **stop and restart** the process running `tsx server/index.ts` (`npm run dev`). Use **one** origin: the browser URL port must match **`PORT`** (see **`GET /api/health`** for `port`, `pid`, `uptimeSeconds`).
+- **New features:** Register standalone route modules **early** in `registerRoutes` immediately after `buildAuthMiddleware` (same block as **`registerRiskExceptionRoutes`**, **`registerComplianceEvidenceRoutes`**, **`registerVexRoutes`**). Vite attaches **after** `registerRoutes` in `server/index.ts`; production fix for “new route 404” is **restart** plus **early registration** (and `vite.ts` skips running Vite middleware for `/api` paths).
+- **Verify scripts:** Default `PORT` for `cli/verify*.ts` is **`DEFAULT_DEV_SERVER_PORT`** in `cli/devServerPort.ts` (keep aligned with `package.json` `dev`).
+
+## Phases reference
+
+The authoritative phase breakdown and feature list lives in:
+
+`23_Documentation/MASTER-PLAN-PHASES/00-PHASE-INDEX.md`
+
+Defer Bitbucket / Azure DevOps per:
+
+`23_Documentation/deferred-bitbucket-azure-devops/README.md`

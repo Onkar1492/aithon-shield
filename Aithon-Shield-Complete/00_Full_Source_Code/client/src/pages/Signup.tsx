@@ -12,6 +12,7 @@ import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import logoImage from "@assets/image_1761361808622.png";
 import { signUpSchema } from "@shared/schema";
+import { DemoModeBanner } from "@/components/DemoModeBanner";
 
 type SignupForm = z.infer<typeof signUpSchema>;
 
@@ -57,7 +58,9 @@ export default function Signup() {
   };
 
   return (
-    <div className="min-h-screen flex flex-col items-center justify-center bg-background p-4">
+    <div className="min-h-screen flex flex-col bg-background">
+      <DemoModeBanner />
+      <div className="flex flex-1 flex-col items-center justify-center p-4">
       <Card className="w-full max-w-md">
         <CardHeader className="space-y-1 text-center">
           <div className="flex justify-center mb-4">
@@ -211,6 +214,7 @@ export default function Signup() {
           <a href="/accessibility" className="hover:underline hover:text-foreground transition-colors" data-testid="link-signup-accessibility">Accessibility</a>
         </nav>
       </footer>
+      </div>
     </div>
   );
 }

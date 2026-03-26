@@ -1,5 +1,7 @@
 import webpush from 'web-push';
 import type { IStorage } from './storage';
+import { storage } from './storage';
+import { dispatchWebhookEvent } from './webhookDispatchService';
 
 // Get VAPID keys from environment variables or generate new ones for development
 function getVapidKeys(): { publicKey: string; privateKey: string; subject: string } {
@@ -49,7 +51,12 @@ interface NotificationData {
   [key: string]: any;
 }
 
-type NotificationType = 'scan_start' | 'scan_complete' | 'fixes_applied' | 'upload_complete';
+type NotificationType =
+  | 'scan_start'
+  | 'scan_complete'
+  | 'fixes_applied'
+  | 'upload_complete'
+  | 'cve_watchlist_match';
 
 export async function sendPushNotification(
   storage: IStorage,
@@ -171,7 +178,8 @@ export async function notifyScanComplete(
   scanName: string,
   findingsCount: number
 ): Promise<void> {
-  // Check user preference for scan completion notifications
+  dispatchWebhookEvent(userId, "scan.completed", { scanId, scanType, scanName, findingsCount });
+
   const user = await storage.getUser(userId);
   if (!user?.notifyOnScanComplete) {
     console.log(`[Push Notification] Scan completion notifications disabled for user: ${userId}`);
@@ -239,5 +247,35 @@ export async function notifyUploadComplete(
     scanId,
     scanType,
     { url: `/scans/${scanType}/${scanId}`, tag: `upload-${scanId}` }
+  );
+}
+
+/** Watchlist matches use the shared storage singleton (called from CVE watchlist service). */
+export async function notifyCveWatchlistMatch(
+  userId: string,
+  cveId: string,
+  findingTitle: string,
+  scanId?: string,
+  scanType?: string,
+): Promise<void> {
+  const user = await storage.getUser(userId);
+  if (!user?.notifyOnCveWatchlist) {
+    console.log(`[Push Notification] CVE watchlist alerts disabled for user: ${userId}`);
+    return;
+  }
+
+  const body = findingTitle.length > 140 ? `${findingTitle.slice(0, 137)}…` : findingTitle;
+  await sendPushNotification(
+    storage,
+    userId,
+    `CVE watchlist: ${cveId}`,
+    body,
+    'cve_watchlist_match',
+    scanId,
+    scanType,
+    {
+      url: `/findings?search=${encodeURIComponent(cveId)}`,
+      tag: `cve-watchlist-${cveId}`,
+    },
   );
 }

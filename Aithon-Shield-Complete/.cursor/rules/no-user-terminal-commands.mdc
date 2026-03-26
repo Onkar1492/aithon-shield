@@ -1,0 +1,21 @@
+---
+description: NEVER ask the user to run terminal commands. The agent runs all installs, builds, git, tests, and servers via the Shell tool.
+alwaysApply: true
+---
+
+# Terminal commands — agent only (permanent)
+
+The user does **not** run terminal commands manually. The agent runs installs, builds, git, tests, and dev servers using Cursor’s **Shell** tool after the user approves **Run** / network / **all** when Cursor prompts — not by pasting into an external Terminal app.
+
+## Rules
+
+1. **Never** tell the user to run something in the terminal — including “just run this once” or “open a terminal and …”.
+2. **Never** give copy-paste shell commands for the user to execute.
+3. **Always** run needed commands yourself with the Shell tool; use `required_permissions: ["all"]` or `["all", "full_network"]` when required.
+4. If a command fails after retries (sandbox, missing CLI, GUI-only steps, device unlock), **state the blocker factually** — do not reframe it as instructions for the user to run CLI. Prefer alternatives (document, CI, defer). Do not claim success if it did not run.
+5. For dev servers: start them via the agent when appropriate and give the working URL as a **clickable** link in the reply.
+
+## Responses to the user
+
+- Report what **was already run** and the outcome (pass/fail, logs), not what “you should run”.
+- Phrases like “run `npm run check` locally” or “you’ll need to execute …” are **forbidden**; instead, run `npm run check` (or equivalent) in this environment and summarize.

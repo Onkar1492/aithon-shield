@@ -5,9 +5,11 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 interface InfoTooltipProps {
   content: string;
   testId?: string;
+  /** Use for longer help text (e.g. field purpose vs. technical inputs). */
+  size?: "default" | "wide";
 }
 
-export function InfoTooltip({ content, testId }: InfoTooltipProps) {
+export function InfoTooltip({ content, testId, size = "default" }: InfoTooltipProps) {
   const [open, setOpen] = useState(false);
 
   return (
@@ -25,7 +27,11 @@ export function InfoTooltip({ content, testId }: InfoTooltipProps) {
       <PopoverContent
         side="top"
         align="start"
-        className="w-64 text-sm"
+        className={
+          size === "wide"
+            ? "max-w-[min(22rem,calc(100vw-2rem))] w-[22rem] text-sm leading-relaxed"
+            : "w-64 text-sm"
+        }
       >
         <p>{content}</p>
       </PopoverContent>

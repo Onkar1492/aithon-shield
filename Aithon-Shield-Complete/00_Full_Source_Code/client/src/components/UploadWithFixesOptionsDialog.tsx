@@ -397,9 +397,6 @@ function formatDate(date: Date | string): string {
     recordActivity();
     setFixingIssues(prev => new Set(prev).add(issueId));
     
-    // Simulate auto-fix process
-    await new Promise(resolve => setTimeout(resolve, 2000));
-    
     setFixingIssues(prev => {
       const newSet = new Set(prev);
       newSet.delete(issueId);

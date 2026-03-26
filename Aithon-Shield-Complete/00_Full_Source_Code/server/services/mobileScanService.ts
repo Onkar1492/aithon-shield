@@ -27,6 +27,8 @@ import type {
 } from './types';
 import { detectSecretsInBinary } from './secretsDetector';
 import { validateWebAppUrl } from './scanValidation';
+import { isDemoMode } from "../demoMode";
+import { demoScanVulnerabilities } from "../demoScanResults";
 
 /**
  * Download mobile app (APK/IPA) from URL
@@ -442,16 +444,39 @@ export async function scanMobileApp(
   progressCallback?: ProgressCallback
 ): Promise<ScanResult> {
   const startTime = Date.now();
+
+  if (isDemoMode()) {
+    if (progressCallback) {
+      await progressCallback(5, "Demo mode: skipping app download and binary analysis");
+      await progressCallback(100, "Demo mobile scan complete");
+    }
+    return {
+      vulnerabilities: demoScanVulnerabilities("mobile"),
+      scanId: config.scanId,
+      scanType: "mobile",
+      completedAt: new Date(),
+      duration: Date.now() - startTime,
+    };
+  }
+
   const allVulnerabilities: Vulnerability[] = [];
   let tempDir: string | null = null;
   let extractedDir: string | null = null;
   
   try {
+    const defaultMods = ["SAST", "SCA", "Secrets"];
+    const mods = config.securityModules?.length ? config.securityModules : defaultMods;
+    const runSast = mods.includes("SAST");
+    const runSecrets = mods.includes("Secrets");
+    if (mods.includes("DAST") && progressCallback) {
+      await progressCallback(2, "DAST skipped (not applicable to mobile package scan)");
+    }
+
     // Step 1: Download App (0-20%)
     if (progressCallback) {
-      await progressCallback(0, 'Starting mobile app scan...');
+      await progressCallback(0, "Starting mobile app scan...");
     }
-    
+
     const appPath = await downloadMobileApp(
       appUrl,
       async (progress, stage) => {
@@ -480,35 +505,39 @@ export async function scanMobileApp(
         await progressCallback(40, 'Parsing AndroidManifest.xml...');
       }
       const manifest = await parseAndroidManifest(apkContent.manifestPath);
-      
-      // Step 4: Android Security Analysis (50-60%)
-      const androidVulns = await analyzeAndroidSecurity(manifest, apkContent);
-      allVulnerabilities.push(...androidVulns);
-      
-      // Step 5: Binary Analysis (60-85%)
-      const binaryVulns = await analyzeAPIBinary(
-        apkContent.classesPath,
-        async (progress, stage) => {
-          if (progressCallback) {
-            await progressCallback(60 + Math.floor((progress - 50) * 0.25), stage);
-          }
-        }
-      );
-      allVulnerabilities.push(...binaryVulns);
-      
-      // Step 6: Secrets Detection (85-95%)
-      if (progressCallback) {
-        await progressCallback(85, 'Scanning for hardcoded secrets...');
+
+      if (runSast) {
+        const androidVulns = await analyzeAndroidSecurity(manifest, apkContent);
+        allVulnerabilities.push(...androidVulns);
+        const binaryVulns = await analyzeAPIBinary(
+          apkContent.classesPath,
+          async (progress, stage) => {
+            if (progressCallback) {
+              await progressCallback(60 + Math.floor((progress - 50) * 0.25), stage);
+            }
+          },
+        );
+        allVulnerabilities.push(...binaryVulns);
+      } else if (progressCallback) {
+        await progressCallback(50, "SAST / binary analysis skipped (module disabled)");
       }
-      const secretsVulns = await detectSecretsInBinary(
-        appPath,
-        async (progress, stage) => {
-          if (progressCallback) {
-            await progressCallback(85 + Math.floor((progress - 85) * 0.1), stage);
-          }
+
+      if (runSecrets) {
+        if (progressCallback) {
+          await progressCallback(85, "Scanning for hardcoded secrets...");
         }
-      );
-      allVulnerabilities.push(...secretsVulns);
+        const secretsVulns = await detectSecretsInBinary(
+          appPath,
+          async (progress, stage) => {
+            if (progressCallback) {
+              await progressCallback(85 + Math.floor((progress - 85) * 0.1), stage);
+            }
+          },
+        );
+        allVulnerabilities.push(...secretsVulns);
+      } else if (progressCallback) {
+        await progressCallback(85, "Secrets scan skipped (module disabled)");
+      }
     } else {
       // iOS
       const ipaContent = await extractIPA(
@@ -526,35 +555,39 @@ export async function scanMobileApp(
         await progressCallback(40, 'Parsing Info.plist...');
       }
       const plist = await parseIOSInfoPlist(ipaContent.plistPath);
-      
-      // Step 4: iOS Security Analysis (50-60%)
-      const iosVulns = await analyzeIOSSecurity(plist, ipaContent);
-      allVulnerabilities.push(...iosVulns);
-      
-      // Step 5: Binary Analysis (60-85%)
-      const binaryVulns = await analyzeAPIBinary(
-        ipaContent.binaryPath,
-        async (progress, stage) => {
-          if (progressCallback) {
-            await progressCallback(60 + Math.floor((progress - 50) * 0.25), stage);
-          }
-        }
-      );
-      allVulnerabilities.push(...binaryVulns);
-      
-      // Step 6: Secrets Detection (85-95%)
-      if (progressCallback) {
-        await progressCallback(85, 'Scanning for hardcoded secrets...');
+
+      if (runSast) {
+        const iosVulns = await analyzeIOSSecurity(plist, ipaContent);
+        allVulnerabilities.push(...iosVulns);
+        const binaryVulns = await analyzeAPIBinary(
+          ipaContent.binaryPath,
+          async (progress, stage) => {
+            if (progressCallback) {
+              await progressCallback(60 + Math.floor((progress - 50) * 0.25), stage);
+            }
+          },
+        );
+        allVulnerabilities.push(...binaryVulns);
+      } else if (progressCallback) {
+        await progressCallback(50, "SAST / binary analysis skipped (module disabled)");
       }
-      const secretsVulns = await detectSecretsInBinary(
-        appPath,
-        async (progress, stage) => {
-          if (progressCallback) {
-            await progressCallback(85 + Math.floor((progress - 85) * 0.1), stage);
-          }
+
+      if (runSecrets) {
+        if (progressCallback) {
+          await progressCallback(85, "Scanning for hardcoded secrets...");
         }
-      );
-      allVulnerabilities.push(...secretsVulns);
+        const secretsVulns = await detectSecretsInBinary(
+          appPath,
+          async (progress, stage) => {
+            if (progressCallback) {
+              await progressCallback(85 + Math.floor((progress - 85) * 0.1), stage);
+            }
+          },
+        );
+        allVulnerabilities.push(...secretsVulns);
+      } else if (progressCallback) {
+        await progressCallback(85, "Secrets scan skipped (module disabled)");
+      }
     }
     
     // Step 7: Finalize (95-100%)

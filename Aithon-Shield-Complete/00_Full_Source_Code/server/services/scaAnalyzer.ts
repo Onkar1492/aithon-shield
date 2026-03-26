@@ -9,6 +9,12 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import type { Dependency, DependencyManifest, Vulnerability, ProgressCallback } from './types';
+import { annotateScaReachability } from './scaReachability';
+import { analyzeSupplyChainRisks } from './supplyChainRiskService';
+
+function scaFields(dep: Dependency) {
+  return { scaPackage: dep.name, scaEcosystem: dep.type };
+}
 
 /**
  * Rate limiter for NIST NVD API (5 requests per 30 seconds)
@@ -390,6 +396,7 @@ async function checkCISAKEV(dependency: Dependency): Promise<Vulnerability[]> {
           riskScore: 100,
           exploitabilityScore: 100,
           impactScore: 100,
+          ...scaFields(dependency),
         });
         break; // Only report once per dependency
       }
@@ -459,14 +466,25 @@ export async function performSCAScan(
     return [];
   }
 
-  // Check vulnerabilities (50-100%)
+  // Check vulnerabilities (50-95%)
   const vulnerabilities = await checkDependencyVulnerabilities(
     manifest.dependencies,
     progressCallback
   );
 
   if (progressCallback) {
-    await progressCallback(100, `SCA scan complete. Found ${vulnerabilities.length} vulnerabilities`);
+    await progressCallback(90, 'Analyzing supply-chain risks (typosquatting, dependency confusion)...');
+  }
+  const supplyChainFindings = analyzeSupplyChainRisks(manifest.dependencies);
+  vulnerabilities.push(...supplyChainFindings);
+
+  if (progressCallback) {
+    await progressCallback(95, 'Analyzing SCA import reachability...');
+  }
+  await annotateScaReachability(repoPath, vulnerabilities);
+
+  if (progressCallback) {
+    await progressCallback(100, `SCA scan complete. Found ${vulnerabilities.length} vulnerabilities (${supplyChainFindings.length} supply-chain risks)`);
   }
 
   return vulnerabilities;

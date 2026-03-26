@@ -16,7 +16,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { 
+import {
   ArrowLeft, 
   Clock, 
   CheckCircle2, 
@@ -28,7 +28,9 @@ import {
   Sparkles,
   Eye,
   RotateCw,
-  Wrench
+  Wrench,
+  Link2,
+  Package,
 } from "lucide-react";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -51,9 +53,29 @@ interface ScanData {
   projectName?: string;
   appName?: string;
   url?: string;
+  appUrl?: string;
   target?: string;
   scannedAt?: string;
+  scanError?: string | null;
+  workflowMetadata?: Record<string, unknown> | null;
 }
+
+type SastDastCorrelationResponse =
+  | { linked: false; reason: "no_source_repository" | "no_mvp_scan_for_repo"; repositoryUrl?: string }
+  | {
+      linked: true;
+      repositoryUrl: string;
+      mvpScanId: string;
+      mvpProjectName: string;
+      pairs: Array<{
+        dast: { id: string; title: string; cwe: string; severity: string; category: string; location: string | null };
+        sast: { id: string; title: string; cwe: string; severity: string; category: string; location: string | null };
+        matchType: "cwe";
+      }>;
+      dastOnly: Array<{ id: string; title: string; cwe: string; severity: string; category: string; location: string | null }>;
+      sastOnly: Array<{ id: string; title: string; cwe: string; severity: string; category: string; location: string | null }>;
+      summary: { dastTotal: number; sastTotal: number; pairedCount: number };
+    };
 
 const scanTypeLabels: Record<ScanType, string> = {
   mvp: "MVP Code Scan",
@@ -133,6 +155,11 @@ export default function ScanDetails() {
       setSelectedFinding(null);
     }
   }, [fixWorkflow?.showScopeDialog, fixWorkflow?.showPaymentDialog, fixWorkflow]);
+
+  const { data: sastDastCorrelation, isLoading: isLoadingSastDast } = useQuery<SastDastCorrelationResponse>({
+    queryKey: [`/api/web-scans/${scanId}/sast-dast-correlation`],
+    enabled: scanType === "web" && !!scanId,
+  });
 
   // Fetch scan data from detail endpoint (not list) to get accurate real-time counts
   const { data: scan, isLoading: isLoadingScans } = useQuery<ScanData>({
@@ -217,6 +244,9 @@ export default function ScanDetails() {
     );
   }
 
+  const canShowRescanActions =
+    scan.scanStatus === "completed" || scan.scanStatus === "failed";
+
   const getScanName = () => {
     if (scan.projectName) return scan.projectName;
     if (scan.appName) return scan.appName;
@@ -278,7 +308,7 @@ export default function ScanDetails() {
             {scan.scanStatus === "pending" && <Clock className="w-3 h-3 mr-1" />}
             {scan.scanStatus === "scanning" ? "Scanning" : scan.scanStatus.charAt(0).toUpperCase() + scan.scanStatus.slice(1).replace("-", " ")}
           </Badge>
-          {isRescanSupported && scan.scanStatus === "completed" && (
+          {isRescanSupported && canShowRescanActions && (
             <Button
               variant="outline"
               size="sm"
@@ -289,7 +319,7 @@ export default function ScanDetails() {
               Run New Scan
             </Button>
           )}
-          {isRescanSupported && scanFindings.length > 0 && scan.scanStatus === "completed" && (
+          {isRescanSupported && scanFindings.length > 0 && canShowRescanActions && (
             <Button
               size="sm"
               onClick={() => setLocation(`${scanPageRoutes[scanType]}/${scanId}`)}
@@ -297,6 +327,17 @@ export default function ScanDetails() {
             >
               <Wrench className="w-4 h-4 mr-2" />
               Fix & Upload Workflow
+            </Button>
+          )}
+          {scanType === "mvp" && canShowRescanActions && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setLocation(`/scans/mvp/${scanId}/upgrade-plan`)}
+              data-testid="button-upgrade-plan"
+            >
+              <Package className="w-4 h-4 mr-2" />
+              Upgrade Plan
             </Button>
           )}
         </div>
@@ -320,6 +361,11 @@ export default function ScanDetails() {
           {scan.scanStatus === "completed" && (
             <p className="text-sm text-muted-foreground">
               Scan completed. Found {scan.findingsCount || 0} issue{(scan.findingsCount || 0) !== 1 ? 's' : ''}.
+            </p>
+          )}
+          {scan.scanStatus === "failed" && (
+            <p className="text-sm text-destructive">
+              Scan failed{scan.scanError ? `: ${scan.scanError}` : "."}
             </p>
           )}
         </div>
@@ -373,6 +419,129 @@ export default function ScanDetails() {
         </Card>
       </div>
 
+      {/* Supply-Chain Risk Summary */}
+      {(() => {
+        const scFindings = scanFindings.filter(f => f.category === "Supply Chain Risk");
+        if (scFindings.length === 0) return null;
+        const typosquatCount = scFindings.filter(f => f.title?.toLowerCase().includes("typosquat")).length;
+        const confusionCount = scFindings.filter(f => f.title?.toLowerCase().includes("dependency confusion")).length;
+        const otherCount = scFindings.length - typosquatCount - confusionCount;
+        return (
+          <Card className="p-6 border-orange-400/30 bg-orange-500/5">
+            <div className="flex items-start gap-3 mb-3">
+              <div className="h-10 w-10 rounded-lg bg-orange-500/10 flex items-center justify-center shrink-0">
+                <Package className="h-5 w-5 text-orange-500" />
+              </div>
+              <div>
+                <h3 className="font-semibold">Supply-Chain Risk Detected</h3>
+                <p className="text-sm text-muted-foreground mt-1">
+                  {scFindings.length} supply-chain {scFindings.length === 1 ? "risk" : "risks"} found in this scan's dependencies.
+                </p>
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-3 ml-[52px]">
+              {typosquatCount > 0 && (
+                <Badge variant="outline" className="border-orange-400 text-orange-600 dark:text-orange-400">
+                  {typosquatCount} Typosquatting
+                </Badge>
+              )}
+              {confusionCount > 0 && (
+                <Badge variant="outline" className="border-yellow-500 text-yellow-700 dark:text-yellow-400">
+                  {confusionCount} Dependency Confusion
+                </Badge>
+              )}
+              {otherCount > 0 && (
+                <Badge variant="outline" className="border-gray-400 text-gray-600 dark:text-gray-400">
+                  {otherCount} Suspicious Package
+                </Badge>
+              )}
+            </div>
+          </Card>
+        );
+      })()}
+
+      {/* SAST ↔ DAST correlation (web scans with linked repo) */}
+      {scanType === "web" && (
+        <Card className="p-6 border-primary/20">
+          <div className="flex items-start gap-3 mb-4">
+            <div className="h-10 w-10 rounded-lg bg-primary/10 flex items-center justify-center shrink-0">
+              <Link2 className="h-5 w-5 text-primary" />
+            </div>
+            <div>
+              <h3 className="font-semibold">SAST ↔ DAST correlation</h3>
+              <p className="text-sm text-muted-foreground mt-1">
+                When this web scan shares the same source repository as an MVP code scan, we match findings by{" "}
+                <span className="font-medium text-foreground">CWE</span> to highlight issues visible both statically and
+                at runtime.
+              </p>
+            </div>
+          </div>
+          {isLoadingSastDast ? (
+            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Loading correlation…
+            </div>
+          ) : !sastDastCorrelation ? (
+            <p className="text-sm text-muted-foreground">Correlation unavailable.</p>
+          ) : !sastDastCorrelation.linked ? (
+            <p className="text-sm text-muted-foreground">
+              {sastDastCorrelation.reason === "no_source_repository"
+                ? "Add a repository URL in the New App workflow (Web App tab) so we can link to an MVP scan of the same repo."
+                : `No MVP code scan found for this repository${sastDastCorrelation.repositoryUrl ? ` (${sastDastCorrelation.repositoryUrl})` : ""}. Run an MVP scan on the same repo first.`}
+            </p>
+          ) : (
+            <div className="space-y-4">
+              <div className="flex flex-wrap gap-3 text-sm">
+                <Badge variant="secondary">
+                  MVP: {sastDastCorrelation.mvpProjectName}
+                </Badge>
+                <Badge variant="outline">{sastDastCorrelation.summary.pairedCount} CWE matches</Badge>
+                <span className="text-muted-foreground">
+                  DAST {sastDastCorrelation.summary.dastTotal} · SAST {sastDastCorrelation.summary.sastTotal}
+                </span>
+                <Button
+                  variant="ghost"
+                  className="h-auto p-0 text-xs text-primary"
+                  onClick={() => setLocation(`/scan-details/mvp/${sastDastCorrelation.mvpScanId}`)}
+                >
+                  Open linked MVP scan
+                </Button>
+              </div>
+              {sastDastCorrelation.pairs.length > 0 ? (
+                <div className="rounded-md border divide-y max-h-64 overflow-y-auto">
+                  {sastDastCorrelation.pairs.map((row) => (
+                    <div key={`${row.dast.id}-${row.sast.id}`} className="p-3 text-sm grid gap-2 md:grid-cols-2">
+                      <div>
+                        <div className="text-xs font-medium text-muted-foreground mb-1">DAST (this scan)</div>
+                        <div className="font-medium line-clamp-2">{row.dast.title}</div>
+                        <div className="text-xs text-muted-foreground mt-1">
+                          CWE-{row.dast.cwe.replace(/\D/g, "") || row.dast.cwe} · {row.dast.severity}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-xs font-medium text-muted-foreground mb-1">SAST (MVP)</div>
+                        <div className="font-medium line-clamp-2">{row.sast.title}</div>
+                        <div className="text-xs text-muted-foreground mt-1">
+                          CWE-{row.sast.cwe.replace(/\D/g, "") || row.sast.cwe} · {row.sast.severity}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-sm text-muted-foreground">No overlapping CWEs between DAST and SAST for this pair of scans.</p>
+              )}
+              {(sastDastCorrelation.dastOnly.length > 0 || sastDastCorrelation.sastOnly.length > 0) && (
+                <p className="text-xs text-muted-foreground">
+                  Unmatched: {sastDastCorrelation.dastOnly.length} DAST-only, {sastDastCorrelation.sastOnly.length}{" "}
+                  SAST-only (different CWEs or uneven counts per CWE).
+                </p>
+              )}
+            </div>
+          )}
+        </Card>
+      )}
+
       {/* Findings List */}
       <div className="space-y-4">
         <h2 className="text-xl font-semibold">
@@ -411,6 +580,12 @@ export default function ScanDetails() {
                         <Badge variant="secondary" className="text-xs">
                           {finding.category}
                         </Badge>
+                        {finding.dastProof && (
+                          <Badge className="bg-green-600 text-white text-xs gap-1 px-2 py-0.5">
+                            <Shield className="w-3 h-3" />
+                            Exploit Proof
+                          </Badge>
+                        )}
                         {finding.status === "resolved" && (
                           <Badge variant="outline" className="text-xs text-green-500 border-green-500">
                             Resolved
@@ -439,7 +614,7 @@ export default function ScanDetails() {
       </div>
 
       {/* Action Banner - Fix & Upload Workflow */}
-      {isRescanSupported && scanFindings.length > 0 && scan.scanStatus === "completed" && (
+      {isRescanSupported && scanFindings.length > 0 && canShowRescanActions && (
         <Card className="p-6 border-primary/30 bg-primary/5">
           <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
             <div>
@@ -538,6 +713,75 @@ export default function ScanDetails() {
                 </code>
               </div>
             )}
+
+            {/* DAST Proof Evidence */}
+            {selectedFinding?.dastProof && (() => {
+              try {
+                const proof = typeof selectedFinding.dastProof === "string"
+                  ? JSON.parse(selectedFinding.dastProof)
+                  : selectedFinding.dastProof;
+                return (
+                  <div className="p-4 border border-green-500/30 bg-green-500/5 rounded-lg space-y-3">
+                    <div className="flex items-center gap-2">
+                      <Shield className="w-5 h-5 text-green-500" />
+                      <h4 className="font-semibold">Exploit Proof Evidence</h4>
+                      <Badge variant="outline" className={
+                        proof.confidence === "definite" ? "border-green-500 text-green-500 text-xs" :
+                        proof.confidence === "firm" ? "border-yellow-500 text-yellow-500 text-xs" :
+                        "border-gray-400 text-gray-400 text-xs"
+                      }>
+                        {proof.confidence}
+                      </Badge>
+                      {proof.confirmed && (
+                        <Badge variant="outline" className="border-green-500 text-green-500 text-xs">
+                          <CheckCircle2 className="w-3 h-3 mr-1" />
+                          Confirmed
+                        </Badge>
+                      )}
+                    </div>
+
+                    <div>
+                      <p className="text-xs font-medium text-muted-foreground mb-1">Request</p>
+                      <code className="block p-2 bg-muted rounded text-xs font-mono overflow-x-auto">
+                        {proof.requestMethod} {proof.requestUrl}
+                      </code>
+                    </div>
+
+                    <div>
+                      <p className="text-xs font-medium text-muted-foreground mb-1">Response (status {proof.responseStatus})</p>
+                      <code className="block p-2 bg-muted rounded text-xs font-mono overflow-x-auto whitespace-pre-wrap max-h-32 overflow-y-auto">
+                        {proof.responseSnippet}
+                      </code>
+                    </div>
+
+                    <div>
+                      <p className="text-xs font-medium text-muted-foreground mb-1">Matched Pattern</p>
+                      <code className="block p-2 bg-red-500/10 border border-red-500/20 rounded text-xs font-mono text-red-400">
+                        {proof.matchedPattern} (in {proof.matchedLocation})
+                      </code>
+                    </div>
+
+                    <div>
+                      <p className="text-xs font-medium text-muted-foreground mb-1">Reproduce with curl</p>
+                      <code className="block p-2 bg-muted rounded text-xs font-mono overflow-x-auto">
+                        {proof.curlCommand}
+                      </code>
+                    </div>
+
+                    {proof.reproductionSteps?.length > 0 && (
+                      <div>
+                        <p className="text-xs font-medium text-muted-foreground mb-1">Reproduction Steps</p>
+                        <ol className="list-decimal list-inside text-xs text-muted-foreground space-y-1">
+                          {proof.reproductionSteps.map((step: string, i: number) => (
+                            <li key={i}>{step}</li>
+                          ))}
+                        </ol>
+                      </div>
+                    )}
+                  </div>
+                );
+              } catch { return null; }
+            })()}
 
             {/* AI-Powered Fix Suggestion */}
             {selectedFinding?.aiSuggestion && (

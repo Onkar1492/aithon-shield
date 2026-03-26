@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import {
   Dialog,
   DialogContent,
@@ -21,7 +21,7 @@ import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Card } from "@/components/ui/card";
-import { Plus, Code, Smartphone, Globe, ChevronRight, ArrowLeft } from "lucide-react";
+import { Plus, Code, Smartphone, Globe, ChevronRight, ArrowLeft, Database } from "lucide-react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -36,61 +36,89 @@ import {
 } from "@/components/ui/form";
 import { useToast } from "@/hooks/use-toast";
 import { ToastAction } from "@/components/ui/toast";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import type { InsertMvpCodeScan, InsertMobileAppScan, InsertWebAppScan } from "@shared/schema";
+import type {
+  ContainerScan,
+  InsertMvpCodeScan,
+  InsertMobileAppScan,
+  InsertWebAppScan,
+  InsertContainerScan,
+} from "@shared/schema";
 import { addSessionScan } from "@/hooks/useScanNotifications";
 import { useLocation } from "wouter";
 
-type ScanType = "mvp" | "mobile" | "web" | null;
+type ScanType = "mvp" | "mobile" | "web" | "container" | null;
 
 // Validation schemas for each scan type
-const mvpScanSchema = z.object({
-  projectName: z.string().min(1, "Project name is required"),
-  sourcePlatform: z.string().min(1, "Source platform is required"),
-  repoUrl: z.string().min(1, "Repository URL is required")
-    .refine((url) => {
-      // Must start with http:// or https://
-      return /^https?:\/\//.test(url);
-    }, "Repository URL must be a valid URL starting with http:// or https://")
-    .refine((url) => {
-      // Must be a valid Git repository URL
-      return /^https?:\/\/(github\.com|gitlab\.com|bitbucket\.org|.*\/.*\.git|.*\/.*\/.*)/.test(url);
-    }, "Repository URL must be a valid Git repository URL (e.g., https://github.com/user/repo)"),
-  branch: z.string().optional(),
-  techStack: z.string().min(1, "Tech stack is required"),
-  cloudProvider: z.string().optional(),
-});
+const mvpRepoUrlProd = z
+  .string()
+  .min(1, "Repository URL is required")
+  .refine(
+    (url) => /demo/i.test(url) || /^https?:\/\//.test(url),
+    'Repository URL must start with http:// or https://, or contain "demo" for trial use.',
+  )
+  .refine(
+    (url) =>
+      /demo/i.test(url) ||
+      /^https?:\/\/(github\.com|gitlab\.com|bitbucket\.org|.*\/.*\.git|.*\/.*\/.*)/.test(url),
+    "Repository URL must be a valid Git repository URL (e.g., https://github.com/user/repo), or contain \"demo\" for trial use.",
+  );
 
-const mobileScanSchema = z.object({
-  appName: z.string().min(1, "App name is required"),
-  platform: z.enum(["ios", "android"], {
-    required_error: "Platform is required",
-  }),
-  appId: z.string().min(1, "App Store URL or Bundle ID is required"),
-  version: z.string().min(1, "Version is required"),
-  apiEndpoint: z.string().optional()
-    .refine((url) => {
-      if (!url) return true; // Optional field
-      return /^https?:\/\//.test(url);
-    }, "API endpoint must be a valid URL starting with http:// or https://"),
-  cloudProvider: z.string().optional(),
-  notes: z.string().optional(),
-});
+const mvpRepoUrlDev = z.string().min(1, "Repository URL is required");
 
-const webScanSchema = z.object({
-  appName: z.string().min(1, "Application name is required"),
-  url: z.string().min(1, "Application URL is required").url("Must be a valid URL"),
-  scanDepth: z.string().min(1, "Scan depth is required"),
-  cloudProvider: z.string().optional(),
-  authRequired: z.enum(["yes", "no"], {
-    required_error: "Please specify if authentication is required",
-  }),
-});
+function buildMvpScanSchema(strictProdScanUrls: boolean) {
+  return z.object({
+    projectName: z.string().min(1, "Project name is required"),
+    sourcePlatform: z.string().min(1, "Source platform is required"),
+    repoUrl: strictProdScanUrls ? mvpRepoUrlProd : mvpRepoUrlDev,
+    branch: z.string().optional(),
+    techStack: z.string().min(1, "Tech stack is required"),
+    cloudProvider: z.string().optional(),
+  });
+}
 
-type MvpScanFormData = z.infer<typeof mvpScanSchema>;
-type MobileScanFormData = z.infer<typeof mobileScanSchema>;
-type WebScanFormData = z.infer<typeof webScanSchema>;
+function buildMobileScanSchema(strictProdScanUrls: boolean) {
+  return z.object({
+    appName: z.string().min(1, "App name is required"),
+    platform: z.enum(["ios", "android"], {
+      required_error: "Platform is required",
+    }),
+    appId: z.string().min(1, "App Store URL or Bundle ID is required"),
+    version: z.string().min(1, "Version is required"),
+    apiEndpoint: z
+      .string()
+      .optional()
+      .refine(
+        (url) => {
+          if (!url) return true;
+          if (!strictProdScanUrls) return true;
+          return /^https?:\/\//.test(url);
+        },
+        "API endpoint must be a valid URL starting with http:// or https://",
+      ),
+    cloudProvider: z.string().optional(),
+    notes: z.string().optional(),
+  });
+}
+
+function buildWebScanSchema(strictProdScanUrls: boolean) {
+  return z.object({
+    appName: z.string().min(1, "Application name is required"),
+    url: strictProdScanUrls
+      ? z.string().min(1, "Application URL is required").url("Must be a valid URL")
+      : z.string().min(1, "Application URL is required"),
+    scanDepth: z.string().min(1, "Scan depth is required"),
+    cloudProvider: z.string().optional(),
+    authRequired: z.enum(["yes", "no"], {
+      required_error: "Please specify if authentication is required",
+    }),
+  });
+}
+
+type MvpScanFormData = z.infer<ReturnType<typeof buildMvpScanSchema>>;
+type MobileScanFormData = z.infer<ReturnType<typeof buildMobileScanSchema>>;
+type WebScanFormData = z.infer<ReturnType<typeof buildWebScanSchema>>;
 
 interface NewScanDialogProps {
   open?: boolean;
@@ -109,10 +137,23 @@ export function NewScanDialog({ open: controlledOpen, onOpenChange, preselectedT
   const open = controlledOpen !== undefined ? controlledOpen : internalOpen;
   const setOpen = onOpenChange || setInternalOpen;
 
+  const { data: appConfig } = useQuery<{ demoMode: boolean }>({
+    queryKey: ["/api/app-config"],
+  });
+  const strictProdScanUrls = import.meta.env.PROD && appConfig?.demoMode !== true;
+  const mvpScanSchema = useMemo(() => buildMvpScanSchema(strictProdScanUrls), [strictProdScanUrls]);
+  const mobileScanSchema = useMemo(() => buildMobileScanSchema(strictProdScanUrls), [strictProdScanUrls]);
+  const webScanSchema = useMemo(() => buildWebScanSchema(strictProdScanUrls), [strictProdScanUrls]);
+
+  const mvpResolver = useMemo(() => zodResolver(mvpScanSchema), [mvpScanSchema]);
+  const mobileResolver = useMemo(() => zodResolver(mobileScanSchema), [mobileScanSchema]);
+  const webResolver = useMemo(() => zodResolver(webScanSchema), [webScanSchema]);
+
   // Mutations for creating scans
   const mvpMutation = useMutation({
     mutationFn: async (data: InsertMvpCodeScan) => {
-      return await apiRequest("POST", "/api/mvp-scans", data);
+      const res = await apiRequest("POST", "/api/mvp-scans", data);
+      return (await res.json()) as InsertMvpCodeScan & { id: string };
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/mvp-scans"] });
@@ -121,7 +162,8 @@ export function NewScanDialog({ open: controlledOpen, onOpenChange, preselectedT
 
   const mobileMutation = useMutation({
     mutationFn: async (data: InsertMobileAppScan) => {
-      return await apiRequest("POST", "/api/mobile-scans", data);
+      const res = await apiRequest("POST", "/api/mobile-scans", data);
+      return (await res.json()) as InsertMobileAppScan & { id: string };
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/mobile-scans"] });
@@ -130,16 +172,33 @@ export function NewScanDialog({ open: controlledOpen, onOpenChange, preselectedT
 
   const webMutation = useMutation({
     mutationFn: async (data: InsertWebAppScan) => {
-      return await apiRequest("POST", "/api/web-scans", data);
+      const res = await apiRequest("POST", "/api/web-scans", data);
+      return (await res.json()) as InsertWebAppScan & { id: string };
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/web-scans"] });
     },
   });
 
+  const containerMutation = useMutation({
+    mutationFn: async (data: Omit<InsertContainerScan, "userId">) => {
+      const res = await apiRequest("POST", "/api/container-scans", data);
+      return (await res.json()) as ContainerScan;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/container-scans"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/findings"] });
+    },
+  });
+
+  const [containerImageName, setContainerImageName] = useState("");
+  const [containerImageTag, setContainerImageTag] = useState("latest");
+  const [containerRegistry, setContainerRegistry] = useState("docker-hub");
+  const [containerRegistryUrl, setContainerRegistryUrl] = useState("");
+
   // Form instances for each scan type
   const mvpForm = useForm<MvpScanFormData>({
-    resolver: zodResolver(mvpScanSchema),
+    resolver: mvpResolver,
     defaultValues: {
       projectName: "",
       sourcePlatform: "github",
@@ -151,7 +210,7 @@ export function NewScanDialog({ open: controlledOpen, onOpenChange, preselectedT
   });
 
   const mobileForm = useForm<MobileScanFormData>({
-    resolver: zodResolver(mobileScanSchema),
+    resolver: mobileResolver,
     defaultValues: {
       appName: "",
       platform: "ios",
@@ -164,7 +223,7 @@ export function NewScanDialog({ open: controlledOpen, onOpenChange, preselectedT
   });
 
   const webForm = useForm<WebScanFormData>({
-    resolver: zodResolver(webScanSchema),
+    resolver: webResolver,
     defaultValues: {
       appName: "",
       url: "",
@@ -354,6 +413,67 @@ export function NewScanDialog({ open: controlledOpen, onOpenChange, preselectedT
     }
   };
 
+  const submitContainerScan = async () => {
+    if (!containerImageName.trim()) {
+      toast({
+        title: "Image name required",
+        description: "Enter a repository name (e.g. nginx or bitnami/redis).",
+        variant: "destructive",
+      });
+      return;
+    }
+    if (containerRegistry === "custom" && !containerRegistryUrl.trim()) {
+      toast({
+        title: "Registry URL required",
+        description: "For custom registry, enter the base URL (OCI v2, e.g. https://registry.example.io).",
+        variant: "destructive",
+      });
+      return;
+    }
+    try {
+      const payload: Omit<InsertContainerScan, "userId"> = {
+        scanType: "docker-image",
+        imageName: containerImageName.trim(),
+        imageTag: (containerImageTag.trim() || "latest") as string,
+        registry: containerRegistry,
+        registryUrl:
+          containerRegistry === "custom" ? containerRegistryUrl.trim() || null : null,
+        scanStatus: "pending",
+        findingsCount: 0,
+        criticalCount: 0,
+        highCount: 0,
+        mediumCount: 0,
+        lowCount: 0,
+      };
+      const result = await containerMutation.mutateAsync(payload);
+      if (result?.id) {
+        addSessionScan(result.id, "container", `${payload.imageName}:${payload.imageTag}`);
+      }
+      toast({
+        title: "Container layer scan started",
+        description: `Analyzing manifest for ${payload.imageName}:${payload.imageTag}`,
+        action: (
+          <ToastAction
+            altText="View scan"
+            onClick={() => setLocation(`/scan-details/container/${result.id}`)}
+          >
+            View scan
+          </ToastAction>
+        ),
+      });
+      setOpen(false);
+      setStep("select");
+      setScanType(null);
+      setContainerImageName("");
+      setContainerImageTag("latest");
+      setContainerRegistry("docker-hub");
+      setContainerRegistryUrl("");
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : "Failed to start container scan";
+      toast({ title: "Error", description: message, variant: "destructive" });
+    }
+  };
+
   const handleOpenChange = (isOpen: boolean) => {
     setOpen(isOpen);
     if (!isOpen) {
@@ -362,6 +482,10 @@ export function NewScanDialog({ open: controlledOpen, onOpenChange, preselectedT
       mvpForm.reset();
       mobileForm.reset();
       webForm.reset();
+      setContainerImageName("");
+      setContainerImageTag("latest");
+      setContainerRegistry("docker-hub");
+      setContainerRegistryUrl("");
     }
   };
 
@@ -399,7 +523,7 @@ export function NewScanDialog({ open: controlledOpen, onOpenChange, preselectedT
                         Scan your MVP codebase before launch. Perfect for code from Replit, Bolt, v0, Lovable, or any development platform.
                       </p>
                       <p className="text-sm text-muted-foreground mt-2">
-                        <span className="font-medium">Includes:</span> SAST, SCA, secrets detection, cloud/infra misconfiguration scan
+                        <span className="font-medium">Includes:</span> SAST, SCA, IaC (Terraform, Docker, K8s YAML), secrets detection
                       </p>
                     </div>
                   </div>
@@ -454,6 +578,31 @@ export function NewScanDialog({ open: controlledOpen, onOpenChange, preselectedT
                   <ChevronRight className="h-5 w-5 text-muted-foreground flex-shrink-0" />
                 </div>
               </Card>
+
+              <Card
+                className="p-6 cursor-pointer hover-elevate active-elevate-2 shadow-sm"
+                onClick={() => handleScanTypeSelect("container")}
+                data-testid="card-scan-container"
+              >
+                <div className="flex items-start justify-between">
+                  <div className="flex items-start gap-4 flex-1">
+                    <div className="h-12 w-12 rounded-lg bg-primary/10 flex items-center justify-center flex-shrink-0">
+                      <Database className="h-6 w-6 text-primary" />
+                    </div>
+                    <div className="flex-1">
+                      <h3 className="font-semibold text-lg mb-1">Container image (layers)</h3>
+                      <p className="text-sm text-muted-foreground">
+                        Inspect registry manifest metadata: layer count, sizes, and tag hygiene (Docker Hub or public custom OCI v2).
+                      </p>
+                      <p className="text-sm text-muted-foreground mt-2">
+                        <span className="font-medium">Note:</span> Registry metadata only — use CI image scanners for CVE depth.
+                      </p>
+                    </div>
+                  </div>
+                  <ChevronRight className="h-5 w-5 text-muted-foreground flex-shrink-0" />
+                </div>
+              </Card>
+
             </div>
           </>
         ) : (
@@ -463,11 +612,14 @@ export function NewScanDialog({ open: controlledOpen, onOpenChange, preselectedT
                 {scanType === "mvp" && "Configure MVP Code Scan"}
                 {scanType === "mobile" && "Configure Mobile App Scan"}
                 {scanType === "web" && "Configure Web App Scan"}
+                {scanType === "container" && "Configure container image scan"}
               </DialogTitle>
               <DialogDescription>
                 {scanType === "mvp" && "Provide your code repository details for pre-launch security analysis"}
                 {scanType === "mobile" && "Provide your mobile app details for security testing"}
                 {scanType === "web" && "Provide your web application URL for comprehensive vulnerability assessment"}
+                {scanType === "container" &&
+                  "Uses anonymous registry APIs. Official images use short names (e.g. nginx → library/nginx)."}
               </DialogDescription>
             </DialogHeader>
 
@@ -907,6 +1059,62 @@ export function NewScanDialog({ open: controlledOpen, onOpenChange, preselectedT
                   </form>
                 </Form>
               )}
+
+              {scanType === "container" && (
+                <div className="space-y-4 py-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="container-image-name">Image repository</Label>
+                    <Input
+                      id="container-image-name"
+                      placeholder="e.g. nginx or bitnami/redis"
+                      value={containerImageName}
+                      onChange={(e) => setContainerImageName(e.target.value)}
+                      data-testid="input-container-image-name"
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Docker Hub: short names map to library/* (e.g. nginx → library/nginx).
+                    </p>
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="container-image-tag">Tag</Label>
+                    <Input
+                      id="container-image-tag"
+                      placeholder="latest"
+                      value={containerImageTag}
+                      onChange={(e) => setContainerImageTag(e.target.value)}
+                      data-testid="input-container-image-tag"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Registry</Label>
+                    <Select value={containerRegistry} onValueChange={setContainerRegistry}>
+                      <SelectTrigger data-testid="select-container-registry">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="docker-hub">Docker Hub</SelectItem>
+                        <SelectItem value="custom">Custom (public OCI v2 URL)</SelectItem>
+                        <SelectItem value="gcr">Google GCR (manifest pull not enabled)</SelectItem>
+                        <SelectItem value="ecr">AWS ECR (manifest pull not enabled)</SelectItem>
+                        <SelectItem value="acr">Azure ACR (manifest pull not enabled)</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  {containerRegistry === "custom" && (
+                    <div className="space-y-2">
+                      <Label htmlFor="container-registry-url">Registry base URL</Label>
+                      <Input
+                        id="container-registry-url"
+                        placeholder="https://registry.example.io"
+                        value={containerRegistryUrl}
+                        onChange={(e) => setContainerRegistryUrl(e.target.value)}
+                        data-testid="input-container-registry-url"
+                      />
+                    </div>
+                  )}
+                </div>
+              )}
+
             </div>
 
             <DialogFooter className="gap-2 flex-row justify-between">
@@ -919,10 +1127,16 @@ export function NewScanDialog({ open: controlledOpen, onOpenChange, preselectedT
                   if (scanType === "mvp") mvpForm.handleSubmit(onMvpSubmit)();
                   if (scanType === "mobile") mobileForm.handleSubmit(onMobileSubmit)();
                   if (scanType === "web") webForm.handleSubmit(onWebSubmit)();
+                  if (scanType === "container") void submitContainerScan();
                 }}
                 data-testid="button-start-scan"
+                disabled={scanType === "container" && containerMutation.isPending}
               >
-                Start {scanType === "mvp" ? "Code" : scanType === "mobile" ? "Mobile" : "Web"} Scan
+                {scanType === "container"
+                  ? containerMutation.isPending
+                    ? "Starting…"
+                    : "Start container scan"
+                  : `Start ${scanType === "mvp" ? "Code" : scanType === "mobile" ? "Mobile" : "Web"} Scan`}
               </Button>
             </DialogFooter>
           </>

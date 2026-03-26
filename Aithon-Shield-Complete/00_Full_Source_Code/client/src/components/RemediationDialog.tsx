@@ -21,11 +21,17 @@ import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Sparkles, Copy, Check, ExternalLink, AlertTriangle, Info, CheckCircle2 } from "lucide-react";
+import { Sparkles, Copy, Check, ExternalLink, AlertTriangle, Info, CheckCircle2, Shield } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { isFindingResolved } from "@/lib/findings";
 import { ReuploadReminder } from "./ReuploadReminder";
+import type { FixConfidencePayload } from "@shared/fixConfidence";
+import {
+  formatScaReachabilityLabel,
+  isScaReachabilityValue,
+  SCA_REACHABILITY_DESCRIPTIONS,
+} from "@shared/scaReachability";
 
 interface RemediationDialogProps {
   open: boolean;
@@ -36,6 +42,10 @@ interface RemediationDialogProps {
   fixesApplied?: boolean | null;
   status?: string | null;
   onApplyFix?: () => void;
+  fixConfidence?: FixConfidencePayload | null;
+  /** MVP SCA dependency findings */
+  category?: string | null;
+  scaReachability?: string | null;
 }
 
 interface FileLocation {
@@ -53,7 +63,10 @@ export function RemediationDialog({
   findingId,
   fixesApplied = false,
   status,
-  onApplyFix
+  onApplyFix,
+  fixConfidence,
+  category,
+  scaReachability,
 }: RemediationDialogProps) {
   const isResolved = isFindingResolved({ fixesApplied: fixesApplied || false, status });
   const [copied, setCopied] = useState(false);
@@ -199,6 +212,47 @@ router.get('/api/orders/:id', async (req, res) => {
             {findingTitle}
           </DialogDescription>
         </DialogHeader>
+
+        {fixConfidence && (
+          <Card className="p-4 border-border bg-muted/30">
+            <div className="flex items-start gap-3">
+              <Shield className="h-5 w-5 text-primary shrink-0 mt-0.5" aria-hidden />
+              <div className="min-w-0 flex-1 space-y-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-sm font-medium">Fix confidence</span>
+                  <Badge variant="secondary" className="font-semibold tabular-nums">
+                    {fixConfidence.score}%
+                  </Badge>
+                  <Badge variant="outline" className="capitalize text-xs">
+                    Side effects: {fixConfidence.sideEffectRisk}
+                  </Badge>
+                </div>
+                <p className="text-xs text-muted-foreground leading-relaxed">
+                  {fixConfidence.explainability}
+                </p>
+              </div>
+            </div>
+          </Card>
+        )}
+
+        {category === "Dependency Vulnerability" && scaReachability && isScaReachabilityValue(scaReachability) && (
+          <Card className="p-4 border-border bg-muted/20">
+            <div className="flex items-start gap-3">
+              <Info className="h-5 w-5 text-muted-foreground shrink-0 mt-0.5" aria-hidden />
+              <div className="min-w-0 flex-1 space-y-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-sm font-medium">SCA reachability (heuristic)</span>
+                  <Badge variant="outline" className="text-xs">
+                    {formatScaReachabilityLabel(scaReachability)}
+                  </Badge>
+                </div>
+                <p className="text-xs text-muted-foreground leading-relaxed">
+                  {SCA_REACHABILITY_DESCRIPTIONS[scaReachability]}
+                </p>
+              </div>
+            </div>
+          </Card>
+        )}
 
         {isResolved && (
           <ReuploadReminder findingId={findingId} className="mt-4" />

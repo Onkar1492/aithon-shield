@@ -25,6 +25,7 @@ interface Notification {
   scanType: string | null;
   read: boolean;
   createdAt: string;
+  url?: string | null;
 }
 
 export function NotificationCenter() {
@@ -133,6 +134,12 @@ export function NotificationCenter() {
       markAsReadMutation.mutate(notification.id);
     }
 
+    if (notification.url && notification.url.trim().length > 0) {
+      setLocation(notification.url);
+      setIsOpen(false);
+      return;
+    }
+
     // Navigate to relevant scan page if applicable
     if (notification.scanId && notification.scanType) {
       let path = '';
@@ -151,6 +158,9 @@ export function NotificationCenter() {
           break;
         case 'container':
           path = `/container-scan?selected=${notification.scanId}`;
+          break;
+        case 'api':
+          path = `/scan-details/api/${notification.scanId}`;
           break;
         case 'network':
           path = `/network-scan?selected=${notification.scanId}`;

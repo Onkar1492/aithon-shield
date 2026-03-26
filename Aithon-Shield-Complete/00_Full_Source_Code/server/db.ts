@@ -1,7 +1,13 @@
+import { config as loadEnv } from "dotenv";
+import path from "path";
+import { fileURLToPath } from "url";
 import { Pool, neonConfig } from '@neondatabase/serverless';
 import { drizzle } from 'drizzle-orm/neon-serverless';
 import ws from "ws";
 import * as schema from "@shared/schema";
+
+const __dbDir = path.dirname(fileURLToPath(import.meta.url));
+loadEnv({ path: path.resolve(__dbDir, "../.env") });
 
 neonConfig.webSocketConstructor = ws;
 

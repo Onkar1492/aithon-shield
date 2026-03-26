@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, varchar, integer, boolean, timestamp, jsonb, index } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, integer, boolean, timestamp, jsonb, index, uniqueIndex } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -22,7 +22,17 @@ export const users = pgTable("users", {
   notifyOnScanComplete: boolean("notify_on_scan_complete").notNull().default(true),
   notifyOnFixesApplied: boolean("notify_on_fixes_applied").notNull().default(true),
   notifyOnUpload: boolean("notify_on_upload").notNull().default(true),
+  /** CVE watchlist: in-app + push when a watched CVE appears in a finding */
+  notifyOnCveWatchlist: boolean("notify_on_cve_watchlist").notNull().default(true),
   pushSubscription: text("push_subscription"), // JSON string of Web Push subscription
+  /** Personal / default org for RBAC (no FK — org row created after user signup) */
+  defaultOrganizationId: varchar("default_organization_id"),
+  /** Shield Advisor LLM: openai | anthropic | gemini | mistral | llama | bedrock */
+  shieldAdvisorProvider: text("shield_advisor_provider").notNull().default("openai"),
+  /** Set when the user completes (or skips) the security onboarding wizard. */
+  onboardingCompletedAt: timestamp("onboarding_completed_at"),
+  /** JSON: { critical?: number, high?, medium?, low? } — remediation targets in hours (SLA engine). */
+  slaPolicyHours: jsonb("sla_policy_hours").$type<Record<string, number> | null>(),
   createdAt: timestamp("created_at").notNull().default(sql`now()`),
   updatedAt: timestamp("updated_at").notNull().default(sql`now()`),
 });
@@ -41,6 +51,69 @@ export const insertSessionSchema = createInsertSchema(sessions).omit({
   id: true,
   createdAt: true,
 });
+
+/** API keys for agents / MCP / programmatic access (secret stored as SHA-256 hex only) */
+export const apiKeys = pgTable(
+  "api_keys",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    userId: varchar("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    keyPrefix: text("key_prefix").notNull(),
+    keyHash: text("key_hash").notNull().unique(),
+    /** Comma-separated: read, write, admin */
+    scopes: text("scopes").notNull().default("read,write"),
+    createdAt: timestamp("created_at").notNull().default(sql`now()`),
+    lastUsedAt: timestamp("last_used_at"),
+  },
+  (t) => [index("api_keys_user_idx").on(t.userId)],
+);
+
+export type ApiKey = typeof apiKeys.$inferSelect;
+export type InsertApiKey = typeof apiKeys.$inferInsert;
+
+export const insertApiKeySchema = createInsertSchema(apiKeys).omit({
+  id: true,
+  createdAt: true,
+});
+
+export const organizations = pgTable(
+  "organizations",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    name: text("name").notNull(),
+    slug: text("slug").notNull().unique(),
+    createdAt: timestamp("created_at").notNull().default(sql`now()`),
+    updatedAt: timestamp("updated_at").notNull().default(sql`now()`),
+  },
+  (t) => [index("organizations_slug_idx").on(t.slug)],
+);
+
+export const organizationMembers = pgTable(
+  "organization_members",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    organizationId: varchar("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    userId: varchar("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    /** owner | admin | developer | viewer | auditor */
+    role: text("role").notNull().default("developer"),
+    createdAt: timestamp("created_at").notNull().default(sql`now()`),
+  },
+  (t) => [
+    uniqueIndex("org_members_org_user_unique").on(t.organizationId, t.userId),
+    index("org_members_org_idx").on(t.organizationId),
+    index("org_members_user_idx").on(t.userId),
+  ],
+);
+
+export type Organization = typeof organizations.$inferSelect;
+export type OrganizationMember = typeof organizationMembers.$inferSelect;
 
 export const insertUserSchema = createInsertSchema(users).pick({
   email: true,
@@ -63,11 +136,21 @@ export const loginSchema = z.object({
   password: z.string().trim().min(1, "Password is required"),
 });
 
+export const shieldAdvisorProviderSchema = z.enum([
+  "openai",
+  "anthropic",
+  "gemini",
+  "mistral",
+  "llama",
+  "bedrock",
+]);
+
 export const updateProfileSchema = z.object({
   firstName: z.string().trim().min(2, "First name must be at least 2 characters").optional(),
   lastName: z.string().trim().min(2, "Last name must be at least 2 characters").optional(),
   email: z.string().trim().email("Invalid email address").transform((e) => e.toLowerCase()).optional(),
   password: z.string().trim().min(8, "Password must be at least 8 characters").optional(),
+  shieldAdvisorProvider: shieldAdvisorProviderSchema.optional(),
 });
 
 /** Settings page: all fields shown; empty password means “do not change” */
@@ -87,6 +170,7 @@ export const updateNotificationsSchema = z.object({
   notifyOnScanComplete: z.boolean().optional(),
   notifyOnFixesApplied: z.boolean().optional(),
   notifyOnUpload: z.boolean().optional(),
+  notifyOnCveWatchlist: z.boolean().optional(),
 });
 
 export type InsertUser = z.infer<typeof insertUserSchema>;
@@ -119,7 +203,7 @@ export const findings = pgTable("findings", {
   priorityScore: integer("priority_score").notNull().default(0), // 0-100: Overall priority (calculated)
   // Scan tracking
   scanId: varchar("scan_id"), // ID of the scan that generated this finding
-  scanType: text("scan_type"), // Type of scan: 'mvp', 'mobile', 'web', 'pipeline', 'container', 'network', 'linter'
+  scanType: text("scan_type"), // Type of scan: 'mvp', 'mobile', 'web', 'pipeline', 'container', 'api', 'network', 'linter'
   fixesApplied: boolean("fixes_applied").default(false), // Whether fixes were applied during the scan workflow
   // Source tracking
   source: text("source").notNull(), // 'mvp-scan', 'mobile-scan', 'web-scan', etc.
@@ -128,10 +212,20 @@ export const findings = pgTable("findings", {
   webScanId: varchar("web_scan_id"),
   pipelineScanId: varchar("pipeline_scan_id"),
   containerScanId: varchar("container_scan_id"),
+  apiSecurityScanId: varchar("api_security_scan_id"),
   networkScanId: varchar("network_scan_id"),
   linterScanId: varchar("linter_scan_id"),
+  dastProof: text("dast_proof"),
   isArchived: boolean("is_archived").notNull().default(false),
   archivedAt: timestamp("archived_at"),
+  /** Set when status becomes resolved (MTTR / security health timeline). Cleared on reopen. */
+  resolvedAt: timestamp("resolved_at"),
+  /** Linked external issue (Jira / Linear). */
+  trackerIssueProvider: text("tracker_issue_provider"),
+  trackerIssueKey: text("tracker_issue_key"),
+  trackerIssueUrl: text("tracker_issue_url"),
+  /** SCA only: import/require heuristic vs scanned repo sources */
+  scaReachability: text("sca_reachability"),
   createdAt: timestamp("created_at").notNull().default(sql`now()`),
 });
 
@@ -139,11 +233,16 @@ export const insertFindingSchema = createInsertSchema(findings).omit({
   id: true,
   isArchived: true,
   archivedAt: true,
+  resolvedAt: true,
   createdAt: true,
+  trackerIssueProvider: true,
+  trackerIssueKey: true,
+  trackerIssueUrl: true,
 }).extend({
   scanId: z.string().optional(),
   scanType: z.string().optional(),
   fixesApplied: z.boolean().optional(),
+  dastProof: z.string().optional(),
 });
 
 export type InsertFinding = z.infer<typeof insertFindingSchema>;
@@ -152,6 +251,8 @@ export type Finding = typeof findings.$inferSelect;
 export const mobileAppScans = pgTable("mobile_app_scans", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  /** When set, org members can read shared scans; null = legacy personal-only (owner userId). */
+  organizationId: varchar("organization_id").references(() => organizations.id, { onDelete: "set null" }),
   platform: text("platform").notNull(), // 'ios' or 'android'
   appId: text("app_id").notNull(), // Bundle ID for iOS, Package name for Android
   appName: text("app_name").notNull(),
@@ -198,6 +299,7 @@ export const mobileAppScans = pgTable("mobile_app_scans", {
 export const insertMobileAppScanSchema = createInsertSchema(mobileAppScans).omit({
   id: true,
   createdAt: true,
+  organizationId: true,
 }).extend({
   scannedAt: z.coerce.date().optional(),
   uploadedAt: z.coerce.date().optional(),
@@ -225,6 +327,7 @@ export type MobileAppScan = typeof mobileAppScans.$inferSelect;
 export const mvpCodeScans = pgTable("mvp_code_scans", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  organizationId: varchar("organization_id").references(() => organizations.id, { onDelete: "set null" }),
   platform: text("platform").notNull(), // 'github', 'replit', 'bolt', 'v0', 'lovable', 'other'
   repositoryUrl: text("repository_url").notNull(),
   projectName: text("project_name").notNull(),
@@ -268,6 +371,10 @@ export const mvpCodeScans = pgTable("mvp_code_scans", {
   validationFindings: jsonb("validation_findings"), // JSON object with validation issues
   autoUploadDestination: text("auto_upload_destination"), // Destination info for re-upload
   workflowMetadata: jsonb("workflow_metadata").$type<Record<string, unknown> | null>(),
+  /** SBOM from SCA dependency manifests (CycloneDX + SPDX JSON), generated on successful MVP scan */
+  sbomCycloneDxJson: jsonb("sbom_cyclonedx_json").$type<Record<string, unknown> | null>(),
+  sbomSpdxJson: jsonb("sbom_spdx_json").$type<Record<string, unknown> | null>(),
+  sbomGeneratedAt: timestamp("sbom_generated_at"),
   scannedAt: timestamp("scanned_at"),
   uploadedAt: timestamp("uploaded_at"),
   validatedAt: timestamp("validated_at"),
@@ -277,7 +384,13 @@ export const mvpCodeScans = pgTable("mvp_code_scans", {
 export const insertMvpCodeScanSchema = createInsertSchema(mvpCodeScans).omit({
   id: true,
   createdAt: true,
+  organizationId: true,
+  sbomCycloneDxJson: true,
+  sbomSpdxJson: true,
+  sbomGeneratedAt: true,
 }).extend({
+  /** Plain text; not `.url()` so trial values like `DEMO` are allowed. */
+  repositoryUrl: z.string().min(1, "Repository URL is required"),
   scannedAt: z.coerce.date().optional(),
   uploadedAt: z.coerce.date().optional(),
   workflowMetadata: z.record(z.unknown()).nullable().optional(),
@@ -285,11 +398,15 @@ export const insertMvpCodeScanSchema = createInsertSchema(mvpCodeScans).omit({
 
 export const updateMvpCodeScanSchema = z.object({
   projectName: z.string().min(1, "Project name is required").optional(),
-  repositoryUrl: z.string().url("Must be a valid URL").optional(),
+  /** Shape enforced when starting a scan in production (`validateMvpRepositoryUrl`); dev allows arbitrary text. */
+  repositoryUrl: z.string().min(1, "Repository URL is required").optional(),
   branch: z.string().min(1, "Branch is required").optional(),
   fixesApplied: z.boolean().optional(),
   uploadPreference: z.string().optional(),
   autoUploadDestination: z.string().optional(),
+  targetAppStore: z.string().nullable().optional(),
+  appStoreBundleId: z.string().nullable().optional(),
+  workflowMetadata: z.record(z.unknown()).nullable().optional(),
   // Progress Tracking Fields (Feature 1)
   scanProgress: z.number().min(0).max(100).nullable().optional(),
   scanStage: z.string().nullable().optional(),
@@ -304,6 +421,7 @@ export type MvpCodeScan = typeof mvpCodeScans.$inferSelect;
 export const webAppScans = pgTable("web_app_scans", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  organizationId: varchar("organization_id").references(() => organizations.id, { onDelete: "set null" }),
   appUrl: text("app_url").notNull(),
   appName: text("app_name").notNull(),
   hostingPlatform: text("hosting_platform").notNull(), // 'replit', 'vercel', 'netlify', 'heroku', 'aws', 'other'
@@ -349,6 +467,7 @@ export const webAppScans = pgTable("web_app_scans", {
 export const insertWebAppScanSchema = createInsertSchema(webAppScans).omit({
   id: true,
   createdAt: true,
+  organizationId: true,
 }).extend({
   scannedAt: z.coerce.date().optional(),
   uploadedAt: z.coerce.date().optional(),
@@ -720,13 +839,15 @@ export const scheduledScans = pgTable("scheduled_scans", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
   name: text("name").notNull(),
-  scanType: text("scan_type").notNull(), // 'mvp', 'mobile', 'web', 'pipeline', 'container', 'network', 'linter'
+  scanType: text("scan_type").notNull(), // 'mvp', 'mobile', 'web', 'pipeline', 'container', 'api', 'network', 'linter'
   scanConfig: text("scan_config").notNull(), // JSON string with scan configuration
   frequency: text("frequency").notNull(), // 'daily', 'weekly', 'monthly', 'custom'
   cronExpression: text("cron_expression"), // Custom cron expression if frequency is 'custom'
   isActive: boolean("is_active").notNull().default(true),
   lastRunAt: timestamp("last_run_at"),
   nextRunAt: timestamp("next_run_at"),
+  /** JSON: last run counts + drift deltas vs previous scheduled run (`ScheduledRunLastSummary`) */
+  lastRunSummaryJson: text("last_run_summary_json"),
   createdAt: timestamp("created_at").notNull().default(sql`now()`),
   updatedAt: timestamp("updated_at").notNull().default(sql`now()`),
 });
@@ -736,7 +857,7 @@ export const insertScheduledScanSchema = createInsertSchema(scheduledScans).omit
   createdAt: true,
   updatedAt: true,
   lastRunAt: true,
-  nextRunAt: true,
+  lastRunSummaryJson: true,
 });
 
 export type InsertScheduledScan = z.infer<typeof insertScheduledScanSchema>;
@@ -911,7 +1032,7 @@ export const notifications = pgTable("notifications", {
   title: text("title").notNull(),
   message: text("message").notNull(),
   scanId: varchar("scan_id"), // Reference to the scan that triggered this notification
-  scanType: text("scan_type"), // 'mvp', 'mobile', 'web', 'pipeline', 'container', 'network', 'linter'
+  scanType: text("scan_type"), // 'mvp', 'mobile', 'web', 'pipeline', 'container', 'api', 'network', 'linter'
   read: boolean("read").notNull().default(false),
   url: text("url"), // Optional URL to navigate to when clicked
   createdAt: timestamp("created_at").notNull().default(sql`now()`),
@@ -927,6 +1048,88 @@ export const insertNotificationSchema = createInsertSchema(notifications).omit({
 
 export type InsertNotification = z.infer<typeof insertNotificationSchema>;
 export type Notification = typeof notifications.$inferSelect;
+
+/** User-defined CVE IDs to alert on when matching findings appear (SCA / description text). */
+export const cveWatchlistEntries = pgTable(
+  "cve_watchlist_entries",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    userId: varchar("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    /** Normalized uppercase e.g. CVE-2024-12345 */
+    cveId: text("cve_id").notNull(),
+    note: text("note"),
+    enabled: boolean("enabled").notNull().default(true),
+    createdAt: timestamp("created_at").notNull().default(sql`now()`),
+    updatedAt: timestamp("updated_at").notNull().default(sql`now()`),
+  },
+  (table) => ({
+    userCveUnique: uniqueIndex("cve_watchlist_user_cve_unique").on(table.userId, table.cveId),
+    userIdx: index("cve_watchlist_user_idx").on(table.userId),
+  }),
+);
+
+export const insertCveWatchlistEntrySchema = createInsertSchema(cveWatchlistEntries).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export type InsertCveWatchlistEntry = z.infer<typeof insertCveWatchlistEntrySchema>;
+export type CveWatchlistEntry = typeof cveWatchlistEntries.$inferSelect;
+
+/** Dedupes alerts: one in-app/push notification per (user, finding, CVE). */
+export const cveWatchlistNotified = pgTable(
+  "cve_watchlist_notified",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    userId: varchar("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    findingId: varchar("finding_id").notNull(),
+    cveId: text("cve_id").notNull(),
+    createdAt: timestamp("created_at").notNull().default(sql`now()`),
+  },
+  (table) => ({
+    dedupeUnique: uniqueIndex("cve_watchlist_notified_dedupe").on(table.userId, table.findingId, table.cveId),
+    userIdx: index("cve_watchlist_notified_user_idx").on(table.userId),
+  }),
+);
+
+/** Accepted risk / exception per finding (self-service; audit logged). */
+export const riskExceptions = pgTable(
+  "risk_exceptions",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    userId: varchar("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    findingId: varchar("finding_id")
+      .notNull()
+      .references(() => findings.id, { onDelete: "cascade" }),
+    justification: text("justification").notNull(),
+    /** When set, exception auto-revokes after this time (finding returns to open). */
+    expiresAt: timestamp("expires_at"),
+    status: text("status").notNull().default("active"), // active | revoked
+    revokedAt: timestamp("revoked_at"),
+    createdAt: timestamp("created_at").notNull().default(sql`now()`),
+    updatedAt: timestamp("updated_at").notNull().default(sql`now()`),
+  },
+  (table) => ({
+    userIdx: index("risk_exceptions_user_idx").on(table.userId),
+    findingIdx: index("risk_exceptions_finding_idx").on(table.findingId),
+  }),
+);
+
+export const insertRiskExceptionSchema = createInsertSchema(riskExceptions).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export type InsertRiskException = z.infer<typeof insertRiskExceptionSchema>;
+export type RiskException = typeof riskExceptions.$inferSelect;
 
 // Automated Fix Jobs - Tracks paid automated fix service runs
 export const automatedFixJobs = pgTable("automated_fix_jobs", {
@@ -1008,7 +1211,7 @@ export const globalFixScanTasks = pgTable("global_fix_scan_tasks", {
   userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
   // Scan identification
   scanId: varchar("scan_id").notNull(),
-  scanType: text("scan_type").notNull(), // 'mvp', 'mobile', 'web', 'pipeline', 'container', 'network', 'linter'
+  scanType: text("scan_type").notNull(), // 'mvp', 'mobile', 'web', 'pipeline', 'container', 'api', 'network', 'linter'
   scanName: text("scan_name").notNull(), // Display name
   // Task status
   status: text("status").notNull().default('pending'), // 'pending', 'applying_fixes', 'validating', 'completed', 'failed'
@@ -1043,3 +1246,285 @@ export const insertGlobalFixScanTaskSchema = createInsertSchema(globalFixScanTas
 
 export type InsertGlobalFixScanTask = z.infer<typeof insertGlobalFixScanTaskSchema>;
 export type GlobalFixScanTask = typeof globalFixScanTasks.$inferSelect;
+
+// Append-only audit trail (no updates/deletes via app)
+export const auditEvents = pgTable(
+  "audit_events",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    userId: varchar("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    action: text("action").notNull(),
+    resourceType: text("resource_type").notNull(),
+    resourceId: text("resource_id"),
+    metadata: jsonb("metadata"),
+    ipAddress: text("ip_address"),
+    userAgent: text("user_agent"),
+    createdAt: timestamp("created_at").notNull().default(sql`now()`),
+  },
+  (t) => [
+    index("audit_events_user_created_idx").on(t.userId, t.createdAt),
+    index("audit_events_action_idx").on(t.action),
+  ],
+);
+
+export type AuditEvent = typeof auditEvents.$inferSelect;
+
+/** GitHub / GitLab OAuth tokens (encrypted at rest) */
+export const gitConnections = pgTable(
+  "git_connections",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    userId: varchar("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    /** github | gitlab */
+    provider: text("provider").notNull(),
+    accessTokenEnc: text("access_token_enc").notNull(),
+    refreshTokenEnc: text("refresh_token_enc"),
+    tokenExpiresAt: timestamp("token_expires_at"),
+    externalUsername: text("external_username"),
+    externalUserId: text("external_user_id"),
+    scope: text("scope"),
+    createdAt: timestamp("created_at").notNull().default(sql`now()`),
+    updatedAt: timestamp("updated_at").notNull().default(sql`now()`),
+  },
+  (t) => [index("git_connections_user_provider_idx").on(t.userId, t.provider)],
+);
+
+export type GitConnection = typeof gitConnections.$inferSelect;
+
+/** Jira Cloud (API token) / Linear (API key) */
+export const trackerConnections = pgTable(
+  "tracker_connections",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    userId: varchar("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    /** jira | linear */
+    provider: text("provider").notNull(),
+    /** Jira Cloud base URL, e.g. https://your-domain.atlassian.net */
+    siteBaseUrl: text("site_base_url"),
+    /** Jira: Atlassian account email for API token auth */
+    accountEmail: text("account_email"),
+    accessTokenEnc: text("access_token_enc").notNull(),
+    /** Jira default project key (e.g. SEC) */
+    defaultProjectKey: text("default_project_key"),
+    /** Linear team id for issueCreate */
+    defaultTeamId: text("default_team_id"),
+    /** Jira issue type name (e.g. Task, Bug) */
+    defaultIssueTypeName: text("default_issue_type_name").default("Task"),
+    createdAt: timestamp("created_at").notNull().default(sql`now()`),
+    updatedAt: timestamp("updated_at").notNull().default(sql`now()`),
+  },
+  (t) => [uniqueIndex("tracker_connections_user_provider_uidx").on(t.userId, t.provider)],
+);
+
+export type TrackerConnection = typeof trackerConnections.$inferSelect;
+
+export const remediationJobs = pgTable(
+  "remediation_jobs",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    userId: varchar("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    scanType: text("scan_type").notNull(),
+    scanId: varchar("scan_id").notNull(),
+    /** pending | patching | pr_opened | failed | succeeded */
+    status: text("status").notNull().default("pending"),
+    findingIds: jsonb("finding_ids"),
+    branchName: text("branch_name"),
+    prUrl: text("pr_url"),
+    errorMessage: text("error_message"),
+    provider: text("provider"),
+    repoFullName: text("repo_full_name"),
+    metadata: jsonb("metadata"),
+    createdAt: timestamp("created_at").notNull().default(sql`now()`),
+    updatedAt: timestamp("updated_at").notNull().default(sql`now()`),
+  },
+  (t) => [index("remediation_jobs_user_scan_idx").on(t.userId, t.scanType, t.scanId)],
+);
+
+export type RemediationJob = typeof remediationJobs.$inferSelect;
+
+export const shieldAdvisorConversations = pgTable(
+  "shield_advisor_conversations",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    userId: varchar("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    findingId: varchar("finding_id").notNull(),
+    scanType: text("scan_type").notNull(),
+    scanId: varchar("scan_id").notNull(),
+    provider: text("provider").notNull().default("openai"),
+    messages: jsonb("messages").notNull().$type<{ role: string; content: string }[]>().default(sql`'[]'::jsonb`),
+    createdAt: timestamp("created_at").notNull().default(sql`now()`),
+    updatedAt: timestamp("updated_at").notNull().default(sql`now()`),
+  },
+  (t) => [
+    index("shield_advisor_user_finding_idx").on(t.userId, t.findingId),
+    index("shield_advisor_scan_idx").on(t.userId, t.scanType, t.scanId),
+  ],
+);
+
+export type ShieldAdvisorConversation = typeof shieldAdvisorConversations.$inferSelect;
+
+/** Structured webhook endpoints for SIEM / external consumers. */
+export const webhookEndpoints = pgTable(
+  "webhook_endpoints",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    userId: varchar("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    /** Human-readable label, e.g. "Splunk prod" */
+    name: text("name").notNull(),
+    /** HTTPS URL that receives POST payloads */
+    url: text("url").notNull(),
+    /** json | cef | syslog (RFC 5424 over HTTPS) */
+    format: text("format").notNull().default("json"),
+    /** HMAC-SHA256 secret used to sign payloads (encrypted at rest) */
+    secretEnc: text("secret_enc"),
+    /** Comma-separated event types, e.g. "scan.completed,finding.created,sla.breached" — empty = all */
+    eventFilter: text("event_filter"),
+    enabled: boolean("enabled").notNull().default(true),
+    /** Last successful delivery ISO timestamp */
+    lastDeliveredAt: timestamp("last_delivered_at"),
+    /** Last delivery HTTP status or error */
+    lastDeliveryStatus: text("last_delivery_status"),
+    createdAt: timestamp("created_at").notNull().default(sql`now()`),
+    updatedAt: timestamp("updated_at").notNull().default(sql`now()`),
+  },
+  (t) => [index("webhook_endpoints_user_idx").on(t.userId)],
+);
+
+export const insertWebhookEndpointSchema = createInsertSchema(webhookEndpoints).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+  lastDeliveredAt: true,
+  lastDeliveryStatus: true,
+  secretEnc: true,
+});
+
+export type InsertWebhookEndpoint = z.infer<typeof insertWebhookEndpointSchema>;
+export type WebhookEndpoint = typeof webhookEndpoints.$inferSelect;
+
+/** Delivery log for debugging / retry visibility. Kept for 30 days (application-level TTL). */
+export const webhookDeliveries = pgTable(
+  "webhook_deliveries",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    endpointId: varchar("endpoint_id")
+      .notNull()
+      .references(() => webhookEndpoints.id, { onDelete: "cascade" }),
+    eventType: text("event_type").notNull(),
+    /** HTTP status returned by the target, or null if network error */
+    httpStatus: integer("http_status"),
+    /** Error message if delivery failed */
+    errorMessage: text("error_message"),
+    /** Number of retry attempts (0 = first try) */
+    attempt: integer("attempt").notNull().default(0),
+    createdAt: timestamp("created_at").notNull().default(sql`now()`),
+  },
+  (t) => [index("webhook_deliveries_endpoint_idx").on(t.endpointId, t.createdAt)],
+);
+
+export type WebhookDelivery = typeof webhookDeliveries.$inferSelect;
+
+/**
+ * Secrets Rotation Workflow (P5-H3)
+ * Tracks detected hardcoded secrets and guides the user through rotating them.
+ * Linked to a finding (the scan result that flagged the secret).
+ */
+export const secretsRotationTickets = pgTable(
+  "secrets_rotation_tickets",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    userId: varchar("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    /** The finding that detected this hardcoded secret (nullable for manual tickets). */
+    findingId: varchar("finding_id").references(() => findings.id, { onDelete: "set null" }),
+    /** Human-readable name, e.g. "AWS_SECRET_ACCESS_KEY in config.ts" */
+    secretName: text("secret_name").notNull(),
+    /** Type of secret: api_key, aws_credential, database_url, jwt_token, private_key, oauth_token, etc. */
+    secretType: text("secret_type").notNull().default("api_key"),
+    /** Where the secret was found, e.g. "src/config.ts:42" */
+    location: text("location"),
+    /** critical | high | medium | low */
+    severity: text("severity").notNull().default("high"),
+    /** open | in_progress | rotated | verified | dismissed */
+    status: text("status").notNull().default("open"),
+    /** Step 1: Remove the hardcoded secret from code */
+    stepRemovedFromCode: boolean("step_removed_from_code").notNull().default(false),
+    /** Step 2: Generate a new secret / credential */
+    stepNewSecretGenerated: boolean("step_new_secret_generated").notNull().default(false),
+    /** Step 3: Store in a secrets manager (Vault, AWS SM, .env) */
+    stepStoredInManager: boolean("step_stored_in_manager").notNull().default(false),
+    /** Step 4: Update application config to reference the manager */
+    stepAppConfigUpdated: boolean("step_app_config_updated").notNull().default(false),
+    /** Step 5: Revoke / invalidate the old secret */
+    stepOldSecretRevoked: boolean("step_old_secret_revoked").notNull().default(false),
+    /** Step 6: Verify the app works with the new secret */
+    stepVerified: boolean("step_verified").notNull().default(false),
+    /** Free-form notes from the user */
+    notes: text("notes"),
+    /** Which secrets manager the user chose: vault, aws_sm, gcp_sm, azure_kv, dotenv, other */
+    secretsManager: text("secrets_manager"),
+    rotatedAt: timestamp("rotated_at"),
+    verifiedAt: timestamp("verified_at"),
+    createdAt: timestamp("created_at").notNull().default(sql`now()`),
+    updatedAt: timestamp("updated_at").notNull().default(sql`now()`),
+  },
+  (t) => [
+    index("secrets_rotation_user_idx").on(t.userId),
+    index("secrets_rotation_finding_idx").on(t.findingId),
+    index("secrets_rotation_status_idx").on(t.userId, t.status),
+  ],
+);
+
+export const insertSecretsRotationTicketSchema = createInsertSchema(secretsRotationTickets).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+  rotatedAt: true,
+  verifiedAt: true,
+});
+
+export type SecretsRotationTicket = typeof secretsRotationTickets.$inferSelect;
+export type InsertSecretsRotationTicket = z.infer<typeof insertSecretsRotationTicketSchema>;
+
+/**
+ * Learning Center Progress (P5-H4)
+ * Tracks which learning modules and vulnerability explainers a user has completed.
+ */
+export const learningProgress = pgTable(
+  "learning_progress",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    userId: varchar("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    /** The content ID (module or explainer ID from learningContent.ts) */
+    contentId: varchar("content_id").notNull(),
+    /** "module" or "explainer" */
+    contentType: text("content_type").notNull(),
+    completed: boolean("completed").notNull().default(false),
+    completedAt: timestamp("completed_at"),
+    /** For modules: which section index the user last viewed (0-based) */
+    lastSectionIndex: integer("last_section_index").notNull().default(0),
+    createdAt: timestamp("created_at").notNull().default(sql`now()`),
+    updatedAt: timestamp("updated_at").notNull().default(sql`now()`),
+  },
+  (t) => [
+    index("learning_progress_user_idx").on(t.userId),
+    index("learning_progress_content_idx").on(t.userId, t.contentId, t.contentType),
+  ],
+);
+
+export type LearningProgress = typeof learningProgress.$inferSelect;

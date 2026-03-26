@@ -18,6 +18,9 @@ import {
   Code,
   Globe,
   FileText,
+  Activity,
+  Award,
+  GitBranch,
   Settings,
   CheckCircle2,
   Zap,
@@ -28,12 +31,22 @@ import {
   Lock,
   Cookie,
   FileCode2,
+  Building2,
+  CalendarClock,
+  Radar,
+  Timer,
+  Scale,
+  FolderGit2,
+  KeyRound,
+  CreditCard,
 } from "lucide-react";
 import { useLocation } from "wouter";
 import logoImage from "@assets/image_1761361808622.png";
 
 const coreItems = [
   { title: "Dashboard", icon: LayoutDashboard, path: "/" },
+  { title: "Workspace", icon: Building2, path: "/workspace" },
+  { title: "Repos & Environments", icon: FolderGit2, path: "/repos" },
   { title: "All Scans", icon: ScanSearch, path: "/scans" },
   { title: "MVP Scan", icon: Code, path: "/mvp-code-scan" },
   { title: "Mobile App Scan", icon: Smartphone, path: "/mobile-app-scan" },
@@ -41,18 +54,26 @@ const coreItems = [
   { title: "Findings", icon: Shield, path: "/findings" },
   { title: "Archive", icon: Archive, path: "/archive" },
   { title: "Reports", icon: FileText, path: "/reports" },
+  { title: "Security Health", icon: Activity, path: "/security-health" },
+  { title: "Developer score cards", icon: Award, path: "/developer-score-cards" },
+  { title: "Attack path graph", icon: GitBranch, path: "/attack-path" },
+  { title: "Scheduled Scans", icon: CalendarClock, path: "/scheduled-scans" },
+  { title: "CVE Watchlist", icon: Radar, path: "/cve-watchlist" },
+  { title: "SLA", icon: Timer, path: "/sla" },
+  { title: "Risk exceptions", icon: Scale, path: "/risk-exceptions" },
+  { title: "Secrets Rotation", icon: KeyRound, path: "/secrets-rotation" },
+  /** Keep with SLA / risk so governance is visible without scrolling past Core. */
+  { title: "Compliance", icon: CheckCircle2, path: "/compliance" },
 ];
 
 const additionalServicesItems = [
   { title: "Code Linter Scan", icon: FileCode2, path: "/linter-scan" },
 ];
 
-const analysisItems = [
-  { title: "Compliance", icon: CheckCircle2, path: "/compliance" },
-  { title: "Attack Simulator", icon: Zap, path: "/attack-simulator" },
-];
+const analysisItems = [{ title: "Attack Simulator", icon: Zap, path: "/attack-simulator" }];
 
 const resourceItems = [
+  { title: "Plans & Pricing", icon: CreditCard, path: "/plans" },
   { title: "Learning Hub", icon: BookOpen, path: "/learn" },
   { title: "Audit Log", icon: ScrollText, path: "/audit-log" },
 ];

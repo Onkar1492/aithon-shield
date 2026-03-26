@@ -20,6 +20,8 @@ import { useState, useEffect, useRef } from "react";
 import { useLocation } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import type { Finding as DBFinding, MvpCodeScan, MobileAppScan, WebAppScan } from "@shared/schema";
+import type { FixConfidencePayload } from "@shared/fixConfidence";
+import { getFixConfidenceForFinding } from "@/lib/fixConfidenceDisplay";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { formatDistanceToNow } from "date-fns";
 import { useToast } from "@/hooks/use-toast";
@@ -28,18 +30,13 @@ import { isFindingResolved } from "@/lib/findings";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useMinimizedDialogs } from "@/contexts/MinimizedDialogContext";
 
-interface Finding {
-  id: string;
-  title: string;
-  severity: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW";
-  fixesApplied?: boolean | null;
-  status?: string;
-}
+/** Full finding row from GET /api/findings (may omit server-enriched fixConfidence). */
+type FindingFromApi = DBFinding & { fixConfidence?: FixConfidencePayload | null };
 
 export default function Dashboard() {
   const [, setLocation] = useLocation();
   const [remediationOpen, setRemediationOpen] = useState(false);
-  const [selectedFinding, setSelectedFinding] = useState<Finding | null>(null);
+  const [selectedFinding, setSelectedFinding] = useState<FindingFromApi | null>(null);
   const [newAppWorkflowOpen, setNewAppWorkflowOpen] = useState(false);
   const [existingAppWorkflowOpen, setExistingAppWorkflowOpen] = useState(false);
   const [globalFixOpen, setGlobalFixOpen] = useState(false);
@@ -50,7 +47,7 @@ export default function Dashboard() {
   const { isWorkflowBlocked, restoreDialog } = useMinimizedDialogs();
 
   // Fetch recent findings from API
-  const { data: allFindings } = useQuery<DBFinding[]>({
+  const { data: allFindings } = useQuery<FindingFromApi[]>({
     queryKey: ["/api/findings"],
     refetchInterval: 3000, // Auto-refresh every 3 seconds to update Industry Benchmark
   });
@@ -259,7 +256,7 @@ export default function Dashboard() {
     },
   });
 
-  const handleOpenRemediation = (finding: Finding) => {
+  const handleOpenRemediation = (finding: FindingFromApi) => {
     setSelectedFinding(finding);
     setRemediationOpen(true);
   };
@@ -496,11 +493,7 @@ export default function Dashboard() {
                   aiRemediation={true}
                   scanName={(finding as any).scanName}
                   fixesApplied={finding.fixesApplied || false}
-                  onRemediation={() => handleOpenRemediation({ 
-                    id: finding.id, 
-                    title: finding.title, 
-                    severity: finding.severity.toUpperCase() as "CRITICAL" | "HIGH" | "MEDIUM" | "LOW"
-                  })}
+                  onRemediation={() => handleOpenRemediation(finding)}
                   onRescan={() => handleRescan(finding.id)}
                 />
               ))
@@ -735,6 +728,7 @@ export default function Dashboard() {
           fixesApplied={selectedFinding.fixesApplied}
           status={selectedFinding.status}
           onApplyFix={handleApplyFix}
+          fixConfidence={getFixConfidenceForFinding(selectedFinding)}
         />
       )}
     </div>

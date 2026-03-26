@@ -15,7 +15,15 @@ import { Eye, Calendar, Clock, Pause, Play } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { formatDistanceToNow } from "date-fns";
-import type { MvpCodeScan, MobileAppScan, WebAppScan, PipelineScan, ContainerScan, NetworkScan, LinterScan } from "@shared/schema";
+import type {
+  MvpCodeScan,
+  MobileAppScan,
+  WebAppScan,
+  PipelineScan,
+  ContainerScan,
+  NetworkScan,
+  LinterScan,
+} from "@shared/schema";
 
 export default function Scans() {
   const [, setLocation] = useLocation();

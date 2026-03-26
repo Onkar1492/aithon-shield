@@ -1,5 +1,6 @@
 import type { IStorage } from "./storage";
 import { hashPassword } from "./auth";
+import { isDemoMode } from "./demoMode";
 
 /** Documented in README — created in development if missing */
 const DEV_SEED_USERS = [
@@ -19,10 +20,22 @@ const DEV_SEED_USERS = [
   },
 ] as const;
 
+const DEMO_MODE_SEED_USERS = [
+  {
+    email: "demo@aithonshield.local",
+    username: "demo_explorer",
+    firstName: "Demo",
+    lastName: "Explorer",
+    plainPassword: "DemoMode1!",
+  },
+] as const;
+
 export async function ensureDevSeedUsers(storage: IStorage): Promise<void> {
   if (process.env.NODE_ENV !== "development") return;
 
-  for (const seed of DEV_SEED_USERS) {
+  const seeds = isDemoMode() ? [...DEMO_MODE_SEED_USERS, ...DEV_SEED_USERS] : [...DEV_SEED_USERS];
+
+  for (const seed of seeds) {
     const existing = await storage.getUserByEmailOrUsername(seed.email);
     const hashedPassword = await hashPassword(seed.plainPassword);
     if (!existing) {

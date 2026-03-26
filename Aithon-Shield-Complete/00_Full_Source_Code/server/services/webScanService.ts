@@ -14,6 +14,9 @@
 
 import type { Page, Form, AuthConfig, Vulnerability, ScanResult, WebScanConfig, ProgressCallback } from './types';
 import { validateWebAppUrl } from './scanValidation';
+import { runProofBasedDast } from './proofBasedDastService';
+import { isDemoMode } from "../demoMode";
+import { demoScanVulnerabilities } from "../demoScanResults";
 
 /**
  * Crawl web application and discover pages, forms, and endpoints
@@ -469,66 +472,110 @@ export async function scanWebApp(
   progressCallback?: ProgressCallback
 ): Promise<ScanResult> {
   const startTime = Date.now();
-  const allVulnerabilities: Vulnerability[] = [];
-  
-  try {
-    // Step 1: Crawl Web Application (0-30%)
+
+  if (isDemoMode()) {
     if (progressCallback) {
-      await progressCallback(0, 'Starting web application scan...');
+      await progressCallback(5, "Demo mode: skipping live crawl, SSL, and header checks");
+      await progressCallback(100, "Demo web scan complete");
     }
-    
-    const authConfig: AuthConfig | undefined = config.authenticationType ? {
-      type: config.authenticationType as 'basic' | 'form' | 'api-key',
-      username: config.username,
-      password: config.password,
-      apiKey: config.password, // Simplified - in production, use separate field
-      loginUrl: undefined,
-    } : undefined;
-    
-    const pages = await crawlWebApplication(
-      appUrl,
-      authConfig,
-      async (progress, stage) => {
-        if (progressCallback) {
-          await progressCallback(Math.floor(progress * 0.3), stage);
+    return {
+      vulnerabilities: demoScanVulnerabilities("web"),
+      scanId: config.scanId,
+      scanType: "web",
+      completedAt: new Date(),
+      duration: Date.now() - startTime,
+    };
+  }
+
+  const allVulnerabilities: Vulnerability[] = [];
+  const defaultMods = ["SAST", "DAST", "SCA", "Secrets"];
+  const mods = config.securityModules?.length ? config.securityModules : defaultMods;
+  const runDast = mods.includes("DAST");
+  const runSslHeaders = mods.includes("Secrets") || mods.includes("DAST");
+
+  try {
+    if (progressCallback) {
+      await progressCallback(0, "Starting web application scan...");
+    }
+
+    if (mods.includes("SAST") && progressCallback) {
+      await progressCallback(5, "SAST on live URL: not available in this engine (use MVP repo scan for static analysis)");
+    }
+    if (mods.includes("SCA") && progressCallback) {
+      await progressCallback(8, "SCA on live URL: not available in this engine (use MVP repo scan for dependencies)");
+    }
+
+    const authConfig: AuthConfig | undefined = config.authenticationType
+      ? {
+          type: config.authenticationType as "basic" | "form" | "api-key",
+          username: config.username,
+          password: config.password,
+          apiKey: config.password,
+          loginUrl: undefined,
         }
-      }
-    );
-    
-    // Step 2: OWASP Testing (30-70%)
-    const owaspVulnerabilities = await performOWASPTesting(
+      : undefined;
+
+    // Step 1–2: Crawl + OWASP (DAST)
+    if (runDast) {
+      const pages = await crawlWebApplication(
+        appUrl,
+        authConfig,
+        async (progress, stage) => {
+          if (progressCallback) {
+            await progressCallback(Math.floor(progress * 0.3), stage);
+          }
+        },
+      );
+      const owaspVulnerabilities = await performOWASPTesting(
+        pages,
+        async (progress, stage) => {
+          if (progressCallback) {
+            await progressCallback(30 + Math.floor((progress - 30) * 0.4), stage);
+          }
+        },
+      );
+      allVulnerabilities.push(...owaspVulnerabilities);
+    } else if (progressCallback) {
+      await progressCallback(30, "DAST skipped (dynamic crawl + OWASP tests disabled)");
+    }
+
+    // Step 3: Proof-Based DAST — exploit confirmation (70-85%)
+    const proofFindings = await runProofBasedDast(
+      appUrl,
       pages,
       async (progress, stage) => {
-        if (progressCallback) {
-          await progressCallback(30 + Math.floor((progress - 30) * 0.4), stage);
-        }
-      }
+        if (progressCallback) await progressCallback(progress, stage);
+      },
     );
-    allVulnerabilities.push(...owaspVulnerabilities);
-    
-    // Step 3: SSL/TLS Analysis (70-85%)
-    if (progressCallback) {
-      await progressCallback(70, 'Analyzing SSL/TLS configuration...');
+    allVulnerabilities.push(...proofFindings);
+
+    // Step 4: SSL/TLS Analysis (85-90%)
+    if (runSslHeaders) {
+      if (progressCallback) {
+        await progressCallback(70, "Analyzing SSL/TLS configuration...");
+      }
+      const sslVulnerabilities = await performSSLTLSAnalysis(appUrl);
+      allVulnerabilities.push(...sslVulnerabilities);
+      if (progressCallback) {
+        await progressCallback(85, "SSL/TLS analysis complete");
+      }
+    } else if (progressCallback) {
+      await progressCallback(70, "SSL/TLS checks skipped (enable DAST or Secrets)");
     }
-    const sslVulnerabilities = await performSSLTLSAnalysis(appUrl);
-    allVulnerabilities.push(...sslVulnerabilities);
-    
-    if (progressCallback) {
-      await progressCallback(85, 'SSL/TLS analysis complete');
+
+    // Step 5: Security Headers Check (90-95%)
+    if (runSslHeaders) {
+      if (progressCallback) {
+        await progressCallback(85, "Checking security headers...");
+      }
+      const headerVulnerabilities = await checkSecurityHeaders(appUrl);
+      allVulnerabilities.push(...headerVulnerabilities);
+      if (progressCallback) {
+        await progressCallback(95, "Security headers check complete");
+      }
     }
     
-    // Step 4: Security Headers Check (85-95%)
-    if (progressCallback) {
-      await progressCallback(85, 'Checking security headers...');
-    }
-    const headerVulnerabilities = await checkSecurityHeaders(appUrl);
-    allVulnerabilities.push(...headerVulnerabilities);
-    
-    if (progressCallback) {
-      await progressCallback(95, 'Security headers check complete');
-    }
-    
-    // Step 5: Finalize (95-100%)
+    // Step 6: Finalize (95-100%)
     const duration = Date.now() - startTime;
     
     if (progressCallback) {

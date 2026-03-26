@@ -34,6 +34,14 @@ import Settings from "@/pages/Settings";
 import Compliance from "@/pages/Compliance";
 import Learn from "@/pages/Learn";
 import AuditLog from "@/pages/AuditLog";
+import Workspace from "@/pages/Workspace";
+import SecurityHealth from "@/pages/SecurityHealth";
+import DeveloperScoreCards from "@/pages/DeveloperScoreCards";
+import AttackPathGraphPage from "@/pages/AttackPathGraphPage";
+import ScheduledScansPage from "@/pages/ScheduledScans";
+import CveWatchlistPage from "@/pages/CveWatchlist";
+import SlaPage from "@/pages/Sla";
+import RiskExceptionsPage from "@/pages/RiskExceptions";
 import AttackSimulator from "@/pages/AttackSimulator";
 import ScanDetails from "@/pages/ScanDetails";
 import Login from "@/pages/Login";
@@ -42,7 +50,14 @@ import AccessibilityStatement from "@/pages/AccessibilityStatement";
 import PrivacyPolicy from "@/pages/PrivacyPolicy";
 import CookiePolicy from "@/pages/CookiePolicy";
 import LinterScan from "@/pages/LinterScan";
+import ReposDashboard from "@/pages/ReposDashboard";
+import DependencyUpgradePlan from "@/pages/DependencyUpgradePlan";
+import SecretsRotationPage from "@/pages/SecretsRotation";
+import PlansPage from "@/pages/Plans";
 import NotFound from "@/pages/not-found";
+import { DemoModeBanner } from "@/components/DemoModeBanner";
+import { SecurityOnboardingWizard } from "@/components/SecurityOnboardingWizard";
+import { ShieldAdvisorDock } from "@/components/SecurityChatbot";
 
 function Router() {
   useScanNotifications();
@@ -50,6 +65,7 @@ function Router() {
   return (
     <>
       <TermsOfServiceDialog />
+      <SecurityOnboardingWizard />
       <RouteAnnouncer />
       <Switch>
         <Route path="/" component={Dashboard} />
@@ -61,6 +77,7 @@ function Router() {
         <Route path="/mvp-code-scan" component={MvpCodeScan} />
         <Route path="/mvp-scans" component={MvpCodeScan} />
         <Route path="/mvp-scans/:id" component={MvpCodeScan} />
+        <Route path="/scans/mvp/:id/upgrade-plan" component={DependencyUpgradePlan} />
         <Route path="/web-app-scan" component={WebAppScan} />
         <Route path="/web-scans" component={WebAppScan} />
         <Route path="/web-scans/:id" component={WebAppScan} />
@@ -68,12 +85,23 @@ function Router() {
         <Route path="/linter-scans" component={LinterScan} />
         <Route path="/linter-scans/:id" component={LinterScan} />
         <Route path="/findings" component={Findings} />
+        <Route path="/security-health" component={SecurityHealth} />
+        <Route path="/developer-score-cards" component={DeveloperScoreCards} />
+        <Route path="/attack-path" component={AttackPathGraphPage} />
+        <Route path="/scheduled-scans" component={ScheduledScansPage} />
+        <Route path="/cve-watchlist" component={CveWatchlistPage} />
+        <Route path="/sla" component={SlaPage} />
+        <Route path="/risk-exceptions" component={RiskExceptionsPage} />
+        <Route path="/secrets-rotation" component={SecretsRotationPage} />
+        <Route path="/plans" component={PlansPage} />
         <Route path="/archive" component={Archive} />
         <Route path="/reports" component={Reports} />
         <Route path="/compliance" component={Compliance} />
         <Route path="/attack-simulator" component={AttackSimulator} />
         <Route path="/learn" component={Learn} />
         <Route path="/audit-log" component={AuditLog} />
+        <Route path="/workspace" component={Workspace} />
+        <Route path="/repos" component={ReposDashboard} />
         <Route path="/settings" component={Settings} />
         <Route path="/accessibility" component={AccessibilityStatement} />
         <Route path="/privacy" component={PrivacyPolicy} />
@@ -191,6 +219,7 @@ function AppLayout() {
         <a href="#main-content" className="skip-to-content" data-testid="link-skip-navigation">
           Skip to main content
         </a>
+        <DemoModeBanner />
         <MobileHeader />
         <main id="main-content" role="main" aria-label="Main content" className="flex-1 overflow-auto pb-16" tabIndex={-1}>
           <div className="p-4">
@@ -198,6 +227,7 @@ function AppLayout() {
           </div>
         </main>
         <MobileNav />
+        <ShieldAdvisorDock />
         <MinimizedDialogBar />
         <div aria-live="polite" aria-atomic="true" className="sr-only" id="route-announcer" data-testid="route-announcer" />
       </div>
@@ -212,6 +242,7 @@ function AppLayout() {
         </a>
         <AppSidebar />
         <div className="flex flex-col flex-1 overflow-hidden">
+          <DemoModeBanner />
           <header role="banner" aria-label="Application header" className="flex items-center justify-between px-6 py-4 border-b">
             <SidebarTrigger data-testid="button-sidebar-toggle" aria-label="Toggle sidebar navigation" />
             <div className="flex items-center gap-4">
@@ -227,6 +258,7 @@ function AppLayout() {
           </main>
         </div>
         <MinimizedDialogBar />
+        <ShieldAdvisorDock />
         <div aria-live="polite" aria-atomic="true" className="sr-only" id="route-announcer" data-testid="route-announcer" />
       </div>
     </SidebarProvider>

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useLocation } from "wouter";
 import {
   Table,
   TableBody,
@@ -10,9 +11,9 @@ import {
 import { SeverityBadge } from "./SeverityBadge";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { ExternalLink, Sparkles, RotateCw, MoreVertical, AlertTriangle, Archive } from "lucide-react";
+import { ExternalLink, Sparkles, RotateCw, MoreVertical, AlertTriangle, Archive, Scale, Undo2, Ticket } from "lucide-react";
 
-// P1-P5 priority tier — driven by severity
+// Priority tier — driven by severity
 function getPriorityTier(severity: string | null | undefined): string {
   const s = (severity ?? "").toLowerCase();
   if (s === "critical") return "P1";
@@ -47,18 +48,27 @@ function getPriorityColor(tier: string): string {
 function isFixThisFirst(priorityScore: number, severity: string, exploitabilityScore: number): boolean {
   return priorityScore >= 85 || (severity === "Critical" && exploitabilityScore >= 80);
 }
+
+function isRiskAccepted(finding: { status?: string | null }): boolean {
+  return (finding.status ?? "").toLowerCase() === "accepted-risk";
+}
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { RemediationDialog } from "./RemediationDialog";
 import type { Finding } from "@shared/schema";
+import type { FixConfidencePayload } from "@shared/fixConfidence";
+import { getFixConfidenceForFinding } from "@/lib/fixConfidenceDisplay";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { isFindingResolved } from "@/lib/findings";
+import { formatScaReachabilityLabel } from "@shared/scaReachability";
+import { AcceptRiskDialog } from "./AcceptRiskDialog";
 import { UploadCloud } from "lucide-react";
 import {
   Tooltip,
@@ -67,15 +77,59 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 
+/** API responses include `fixConfidence`; DB row type does not. */
+type FindingRow = Finding & { fixConfidence?: FixConfidencePayload };
+
 interface FindingsTableProps {
-  findings: Finding[];
+  findings: FindingRow[];
   isLoading: boolean;
 }
 
+type TrackerConnectionsPayload = {
+  jira: { connected: boolean };
+  linear: { connected: boolean };
+};
+
+const TRACKER_DISCONNECTED: TrackerConnectionsPayload = {
+  jira: { connected: false },
+  linear: { connected: false },
+};
+
 export function FindingsTable({ findings, isLoading }: FindingsTableProps) {
   const { toast } = useToast();
+  const [, setLocation] = useLocation();
   const [remediationOpen, setRemediationOpen] = useState(false);
-  const [selectedFinding, setSelectedFinding] = useState<Finding | null>(null);
+  const [selectedFinding, setSelectedFinding] = useState<FindingRow | null>(null);
+  const [acceptRiskFinding, setAcceptRiskFinding] = useState<FindingRow | null>(null);
+
+  /** Session-only API: use throwOnError false so the ⋮ menu still shows tracker actions (with Settings hint if load fails). */
+  const { data: trackerStatus } = useQuery<TrackerConnectionsPayload>({
+    queryKey: ["/api/tracker-connections"],
+    retry: false,
+    throwOnError: false,
+    placeholderData: TRACKER_DISCONNECTED,
+  });
+
+  const tracker = trackerStatus ?? TRACKER_DISCONNECTED;
+
+  const trackerIssueMutation = useMutation({
+    mutationFn: async (payload: { findingId: string; provider: "jira" | "linear" }) => {
+      const res = await apiRequest("POST", `/api/findings/${payload.findingId}/tracker-issue`, {
+        provider: payload.provider,
+      });
+      return res.json() as Promise<{ url: string; key: string; provider: string }>;
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/findings"] });
+      toast({
+        title: "Tracker issue created",
+        description: `${data.key} — open the link from your ${data.provider === "linear" ? "Linear" : "Jira"} workspace.`,
+      });
+    },
+    onError: (e: Error) => {
+      toast({ title: "Tracker issue failed", description: e.message, variant: "destructive" });
+    },
+  });
 
   const rescanMutation = useMutation({
     mutationFn: async (findingId: string) => {
@@ -93,6 +147,33 @@ export function FindingsTable({ findings, isLoading }: FindingsTableProps) {
       toast({
         title: "Error",
         description: "Failed to initiate re-scan",
+        variant: "destructive",
+      });
+    },
+  });
+
+  const revokeRiskMutation = useMutation({
+    mutationFn: async (findingId: string) => {
+      const res = await apiRequest("POST", "/api/risk-exceptions/revoke-by-finding", { findingId });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error((err as { message?: string }).message ?? res.statusText);
+      }
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/findings"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/risk-exceptions"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/sla/summary"] });
+      toast({
+        title: "Risk acceptance revoked",
+        description: "The finding is open again for remediation tracking.",
+      });
+    },
+    onError: (e: Error) => {
+      toast({
+        title: "Could not revoke",
+        description: e.message,
         variant: "destructive",
       });
     },
@@ -124,7 +205,7 @@ export function FindingsTable({ findings, isLoading }: FindingsTableProps) {
     archiveMutation.mutate(findingId);
   };
 
-  const handleOpenRemediation = (finding: Finding) => {
+  const handleOpenRemediation = (finding: FindingRow) => {
     setSelectedFinding(finding);
     setRemediationOpen(true);
   };
@@ -133,7 +214,7 @@ export function FindingsTable({ findings, isLoading }: FindingsTableProps) {
     rescanMutation.mutate(findingId);
   };
 
-  const handleViewDetails = (finding: Finding) => {
+  const handleViewDetails = (finding: FindingRow) => {
     // Open the remediation dialog to view all details
     handleOpenRemediation(finding);
   };
@@ -166,6 +247,8 @@ export function FindingsTable({ findings, isLoading }: FindingsTableProps) {
               <TableHead>Scan/Project</TableHead>
               <TableHead>Severity</TableHead>
               <TableHead>Risk Score</TableHead>
+              <TableHead>Fix confidence</TableHead>
+              <TableHead>SCA reach</TableHead>
               <TableHead>Asset</TableHead>
               <TableHead>CWE</TableHead>
               <TableHead>Detected</TableHead>
@@ -174,7 +257,8 @@ export function FindingsTable({ findings, isLoading }: FindingsTableProps) {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {findings.map((finding: Finding) => {
+            {findings.map((finding: FindingRow) => {
+              const fixConfidence = getFixConfidenceForFinding(finding);
               const priorityScore = finding.priorityScore || 0;
               const priorityTier = getPriorityTier(finding.severity);
               const showFixFirst = isFixThisFirst(priorityScore, finding.severity, finding.exploitabilityScore || 0);
@@ -219,12 +303,65 @@ export function FindingsTable({ findings, isLoading }: FindingsTableProps) {
                       {finding.riskScore}/10
                     </Badge>
                   </TableCell>
+                  <TableCell>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Badge
+                          variant="outline"
+                          className="tabular-nums font-semibold cursor-help border-primary/30"
+                          data-testid={`fix-confidence-${finding.id}`}
+                        >
+                          {fixConfidence.score}%
+                        </Badge>
+                      </TooltipTrigger>
+                      <TooltipContent className="max-w-sm">
+                        <p className="text-xs font-medium capitalize">
+                          Side-effect risk: {fixConfidence.sideEffectRisk}
+                        </p>
+                        <p className="text-xs text-muted-foreground mt-1 leading-relaxed">
+                          {fixConfidence.explainability}
+                        </p>
+                      </TooltipContent>
+                    </Tooltip>
+                  </TableCell>
+                  <TableCell className="text-muted-foreground text-xs max-w-[140px]">
+                    {finding.category === "Supply Chain Risk" ? (
+                      <Badge variant="outline" className="text-[10px] border-orange-400 text-orange-600 dark:text-orange-400 gap-1">
+                        <AlertTriangle className="w-3 h-3" />
+                        Supply Chain
+                      </Badge>
+                    ) : finding.category === "Dependency Vulnerability" && finding.scaReachability ? (
+                      <span className="line-clamp-2" title={formatScaReachabilityLabel(finding.scaReachability) ?? ""}>
+                        {formatScaReachabilityLabel(finding.scaReachability)}
+                      </span>
+                    ) : (
+                      <span className="text-muted-foreground/50">—</span>
+                    )}
+                  </TableCell>
                 <TableCell className="font-mono text-sm">{finding.asset}</TableCell>
-                <TableCell className="font-mono text-sm">{finding.cwe}</TableCell>
+                <TableCell className="font-mono text-sm">
+                  {finding.cwe ? (
+                    <a href={`/learn?cwe=${finding.cwe}`} className="text-primary hover:underline" title="Learn about this vulnerability">
+                      {finding.cwe}
+                    </a>
+                  ) : "—"}
+                </TableCell>
                 <TableCell className="text-muted-foreground">{finding.detected}</TableCell>
                 <TableCell>
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 flex-wrap">
                     <span>{finding.status}</span>
+                    {finding.trackerIssueUrl && (
+                      <a
+                        href={finding.trackerIssueUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-xs font-medium text-primary inline-flex items-center gap-1 hover:underline"
+                        data-testid={`link-tracker-issue-${finding.id}`}
+                      >
+                        <Ticket className="w-3 h-3" />
+                        {finding.trackerIssueKey ?? "Ticket"}
+                      </a>
+                    )}
                     {isFindingResolved(finding) && (
                       <Tooltip>
                         <TooltipTrigger asChild>
@@ -247,8 +384,8 @@ export function FindingsTable({ findings, isLoading }: FindingsTableProps) {
                 </TableCell>
                 <TableCell className="text-right">
                   <div className="flex items-center justify-end gap-2">
-                    {/* Only show Fix and Re-scan buttons if finding is NOT resolved */}
-                    {!isFindingResolved(finding) && (
+                    {/* Fix / re-scan when not resolved and not risk-accepted */}
+                    {!isFindingResolved(finding) && !isRiskAccepted(finding) && (
                       <>
                         <DropdownMenu>
                           <DropdownMenuTrigger asChild>
@@ -282,6 +419,18 @@ export function FindingsTable({ findings, isLoading }: FindingsTableProps) {
                         </Button>
                       </>
                     )}
+                    {!isFindingResolved(finding) && isRiskAccepted(finding) && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => revokeRiskMutation.mutate(finding.id)}
+                        disabled={revokeRiskMutation.isPending}
+                        data-testid={`button-revoke-risk-${finding.id}`}
+                      >
+                        <Undo2 className="w-4 h-4 mr-1" />
+                        Revoke acceptance
+                      </Button>
+                    )}
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
                         <Button
@@ -301,6 +450,62 @@ export function FindingsTable({ findings, isLoading }: FindingsTableProps) {
                           <ExternalLink className="w-4 h-4 mr-2" />
                           View Details
                         </DropdownMenuItem>
+                        {!isFindingResolved(finding) && !isRiskAccepted(finding) && (
+                          <DropdownMenuItem
+                            onClick={() => setAcceptRiskFinding(finding)}
+                            data-testid={`menu-accept-risk-${finding.id}`}
+                          >
+                            <Scale className="w-4 h-4 mr-2" />
+                            Accept risk
+                          </DropdownMenuItem>
+                        )}
+                        {!finding.trackerIssueUrl && !isFindingResolved(finding) && !isRiskAccepted(finding) && (
+                          <>
+                            <DropdownMenuSeparator />
+                            <DropdownMenuItem
+                              onClick={() => {
+                                if (!tracker.jira.connected) {
+                                  toast({
+                                    title: "Connect Jira first",
+                                    description: "Open Settings → Issue trackers (Jira / Linear) and save your Jira Cloud credentials.",
+                                  });
+                                  setLocation("/settings");
+                                  return;
+                                }
+                                trackerIssueMutation.mutate({ findingId: finding.id, provider: "jira" });
+                              }}
+                              disabled={trackerIssueMutation.isPending}
+                              data-testid={`menu-create-jira-${finding.id}`}
+                            >
+                              <Ticket className="w-4 h-4 mr-2" />
+                              Create Jira issue
+                              {!tracker.jira.connected && (
+                                <span className="ml-auto text-xs text-muted-foreground pl-2">Setup</span>
+                              )}
+                            </DropdownMenuItem>
+                            <DropdownMenuItem
+                              onClick={() => {
+                                if (!tracker.linear.connected) {
+                                  toast({
+                                    title: "Connect Linear first",
+                                    description: "Open Settings → Issue trackers (Jira / Linear) and save your Linear API key and team id.",
+                                  });
+                                  setLocation("/settings");
+                                  return;
+                                }
+                                trackerIssueMutation.mutate({ findingId: finding.id, provider: "linear" });
+                              }}
+                              disabled={trackerIssueMutation.isPending}
+                              data-testid={`menu-create-linear-${finding.id}`}
+                            >
+                              <Ticket className="w-4 h-4 mr-2" />
+                              Create Linear issue
+                              {!tracker.linear.connected && (
+                                <span className="ml-auto text-xs text-muted-foreground pl-2">Setup</span>
+                              )}
+                            </DropdownMenuItem>
+                          </>
+                        )}
                         <DropdownMenuItem
                           onClick={() => handleArchive(finding.id)}
                           disabled={archiveMutation.isPending}
@@ -330,6 +535,17 @@ export function FindingsTable({ findings, isLoading }: FindingsTableProps) {
           fixesApplied={selectedFinding.fixesApplied || undefined}
           status={selectedFinding.status || undefined}
           onApplyFix={handleApplyFix}
+          fixConfidence={getFixConfidenceForFinding(selectedFinding)}
+          category={selectedFinding.category}
+          scaReachability={selectedFinding.scaReachability}
+        />
+      )}
+      {acceptRiskFinding && (
+        <AcceptRiskDialog
+          open={!!acceptRiskFinding}
+          onOpenChange={(o) => !o && setAcceptRiskFinding(null)}
+          findingId={acceptRiskFinding.id}
+          findingTitle={acceptRiskFinding.title}
         />
       )}
     </TooltipProvider>

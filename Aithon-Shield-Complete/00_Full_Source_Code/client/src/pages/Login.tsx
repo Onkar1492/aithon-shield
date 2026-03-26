@@ -13,6 +13,7 @@ import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import logoImage from "@assets/image_1761361808622.png";
 import SsoLogin from "@/components/SsoLogin";
+import { DemoModeBanner } from "@/components/DemoModeBanner";
 
 type LoginForm = z.infer<typeof loginSchema>;
 
@@ -55,7 +56,9 @@ export default function Login() {
   };
 
   return (
-    <div className="min-h-screen flex flex-col items-center justify-center bg-background p-4">
+    <div className="min-h-screen flex flex-col bg-background">
+      <DemoModeBanner />
+      <div className="flex flex-1 flex-col items-center justify-center p-4">
       <Card className="w-full max-w-md">
         <CardHeader className="space-y-1 text-center">
           <div className="flex justify-center mb-4">
@@ -156,6 +159,7 @@ export default function Login() {
           <a href="/accessibility" className="hover:underline hover:text-foreground transition-colors" data-testid="link-login-accessibility">Accessibility</a>
         </nav>
       </footer>
+      </div>
     </div>
   );
 }

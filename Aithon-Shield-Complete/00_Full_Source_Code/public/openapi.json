@@ -3,13 +3,36 @@
   "info": {
     "title": "Aithon Shield API (subset)",
     "version": "1.0.0",
-    "description": "REST API for scan workflows. Session cookie auth (`sessionId`) is required for all endpoints unless you add API key support. Use this file as a machine-readable index for agents and IDE integrations."
+    "description": "REST API for scan workflows. Authenticate with session cookie `sessionId` (browser) or `Authorization: Bearer <aithon_…>` / `X-API-Key: <aithon_…>` for agents and MCP. API keys carry scopes: **read** (GET/HEAD), **write** (mutations), **admin** (full access). Create keys in Settings → API keys. Rate limits (skipped when `AITHON_DEMO_MODE` + dev): global per-IP on `/api` (default 120/min), stricter on login/signup (default 15/15 min), per-key hash (default 60/min). Responses may include `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset`, `Retry-After` (429). MCP stdio: `npm run mcp` with env `AITHON_API_URL` and `AITHON_API_KEY`. Optional browser CORS for `/api`: set `AGENT_CORS_ORIGINS` to a comma-separated allowlist."
   },
   "servers": [{ "url": "/", "description": "Same origin as the web app" }],
+  "components": {
+    "securitySchemes": {
+      "bearerApiKey": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "API key from Settings (prefix aithon_). Scopes: read (GET/HEAD), write (POST/PATCH/DELETE/…), admin (all)."
+      },
+      "apiKeyHeader": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-API-Key",
+        "description": "Same value as Bearer token"
+      },
+      "sessionCookie": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "sessionId",
+        "description": "Browser session after login"
+      }
+    }
+  },
+  "security": [{ "bearerApiKey": [] }, { "apiKeyHeader": [] }, { "sessionCookie": [] }],
   "paths": {
     "/api/auth/login": {
       "post": {
         "summary": "Login",
+        "security": [],
         "requestBody": {
           "content": {
             "application/json": {
@@ -27,26 +50,403 @@
       }
     },
     "/api/auth/me": { "get": { "summary": "Current user" } },
+    "/api/shield-advisor/chat": {
+      "post": {
+        "summary": "Shield Advisor chat turn",
+        "description": "Session or API key (needs **write** scope). Body: message, optional findingId, scanType (mvp|web|mobile|none), scanId, extraContext. Persists conversation in shield_advisor_conversations. Alias: POST /api/chat. Demo mode returns a canned reply without calling external LLMs."
+      }
+    },
+    "/api/chat": {
+      "post": {
+        "summary": "Alias for Shield Advisor chat",
+        "description": "Same behavior as POST /api/shield-advisor/chat."
+      }
+    },
+    "/api/api-keys": {
+      "get": {
+        "summary": "List API keys (metadata only; session required)",
+        "description": "Does not accept API key auth — use a logged-in browser session."
+      },
+      "post": {
+        "summary": "Create API key",
+        "description": "Returns `plainKey` once. Session required. Default scopes `read` + `write` if omitted.",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["name"],
+                "properties": {
+                  "name": { "type": "string", "minLength": 1, "maxLength": 128 },
+                  "scopes": {
+                    "type": "array",
+                    "items": { "type": "string", "enum": ["read", "write", "admin"] },
+                    "minItems": 1,
+                    "description": "At least one scope; duplicates ignored."
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/api-keys/{id}": {
+      "delete": { "summary": "Revoke API key (session required)" }
+    },
+    "/api/oauth/github/start": {
+      "get": {
+        "summary": "Start GitHub OAuth (session cookie required)",
+        "description": "302 redirect to GitHub authorize. Callback: /api/oauth/github/callback → redirects to /settings. Demo mode: 403."
+      }
+    },
+    "/api/oauth/github/callback": {
+      "get": {
+        "summary": "GitHub OAuth callback",
+        "description": "Exchanges code, stores encrypted token, redirects to /settings?git_connected=github or git_error=…"
+      }
+    },
+    "/api/oauth/gitlab/start": {
+      "get": {
+        "summary": "Start GitLab OAuth (session cookie required)",
+        "description": "302 redirect to GitLab authorize (GITLAB_BASE_URL). Demo mode: 403."
+      }
+    },
+    "/api/oauth/gitlab/callback": {
+      "get": {
+        "summary": "GitLab OAuth callback",
+        "description": "Exchanges code, stores encrypted tokens, redirects to /settings?git_connected=gitlab or git_error=…"
+      }
+    },
+    "/api/git-connections": {
+      "get": {
+        "summary": "List linked GitHub/GitLab accounts (no secrets; session required)",
+        "security": [{ "sessionCookie": [] }]
+      }
+    },
+    "/api/git-connections/{id}": {
+      "delete": {
+        "summary": "Disconnect a Git integration (session required)",
+        "security": [{ "sessionCookie": [] }]
+      }
+    },
+    "/api/remediation-jobs": {
+      "get": {
+        "summary": "List remediation jobs for a scan (session required)",
+        "description": "Query: scanType (mvp|mobile|web|pipeline|container|network|linter), scanId.",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [
+          { "name": "scanType", "in": "query", "required": true, "schema": { "type": "string" } },
+          { "name": "scanId", "in": "query", "required": true, "schema": { "type": "string" } }
+        ]
+      },
+      "post": {
+        "summary": "Create remediation job (opens PR/MR asynchronously; session required)",
+        "description": "Requires linked Git account for provider. Demo mode: 403.",
+        "security": [{ "sessionCookie": [] }],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["scanType", "scanId", "provider", "repoFullName"],
+                "properties": {
+                  "scanType": { "type": "string", "enum": ["mvp", "mobile", "web", "pipeline", "container", "network", "linter"] },
+                  "scanId": { "type": "string" },
+                  "provider": { "type": "string", "enum": ["github", "gitlab"] },
+                  "repoFullName": { "type": "string", "description": "GitHub: owner/repo. GitLab: path_with_namespace or numeric project id as string" },
+                  "findingIds": { "type": "array", "items": { "type": "string" } }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/remediation-jobs/{id}": {
+      "get": {
+        "summary": "Get one remediation job (session required)",
+        "security": [{ "sessionCookie": [] }]
+      }
+    },
+    "/api/audit-events": {
+      "get": {
+        "summary": "List audit events (session required)",
+        "description": "Append-only security audit trail for the current user. Query: limit (1–200, default 100), offset.",
+        "security": [{ "sessionCookie": [] }],
+        "parameters": [
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "minimum": 1, "maximum": 200 } },
+          { "name": "offset", "in": "query", "schema": { "type": "integer", "minimum": 0 } }
+        ]
+      }
+    },
+    "/api/audit-events/export.csv": {
+      "get": {
+        "summary": "Download audit log as CSV (session required)",
+        "description": "Up to 5000 most recent events.",
+        "security": [{ "sessionCookie": [] }]
+      }
+    },
+    "/api/organizations": {
+      "get": {
+        "summary": "List organizations for current user (session required)",
+        "description": "Returns id, name, slug, role (owner | admin | developer | viewer | auditor), createdAt for each membership.",
+        "security": [{ "sessionCookie": [] }]
+      }
+    },
+    "/api/app-config": {
+      "get": {
+        "summary": "Public app flags (demo mode, hints)",
+        "description": "No auth. When AITHON_DEMO_MODE=true and NODE_ENV=development, demoMode is true and UI shows the demo banner. Sign-up is disabled; API key create is allowed for local testing. demoApiKeysDisabled is false. demoStrictScanTargets is true when AITHON_DEMO_STRICT_SCAN_TARGETS is set (stronger dummy-URL hints in the UI only; API does not reject scan targets)."
+      }
+    },
+    "/api/health": {
+      "get": {
+        "summary": "Liveness check",
+        "description": "No auth. Returns ok, demoMode, port, nodeEnv, hasDatabaseUrl, pid, uptimeSeconds, startedAt — use to confirm which Node process is serving the API (after git pull, restart dev if pid/uptime look stale vs new routes)."
+      }
+    },
     "/api/mvp-scans": {
       "post": {
         "summary": "Create MVP code scan",
-        "description": "Body matches insertMvpCodeScan (minus userId). Optional workflowMetadata object stores techStackHint, securityModules[], mvpDeployKind, mvpWebDeployUrl."
+        "description": "Body matches insertMvpCodeScan (minus userId). Optional workflowMetadata object stores techStackHint, securityModules[] (SAST, SCA, IaC, Secrets, optional DAST), mvpDeployKind, mvpWebDeployUrl. Default MVP modules include IaC: Terraform, Dockerfile, K8s/Helm YAML, compose."
       },
       "get": { "summary": "List MVP scans" }
     },
     "/api/mvp-scans/{id}/scan": { "post": { "summary": "Run MVP scan" } },
+    "/api/mvp-scans/{id}/sbom": {
+      "get": {
+        "summary": "Download SBOM (CycloneDX or SPDX JSON)",
+        "description": "After a successful MVP scan, returns CycloneDX 1.5 or SPDX 2.3 JSON. Query: format=cyclonedx | spdx (default cyclonedx). Auth: session or API key.",
+        "parameters": [
+          { "name": "format", "in": "query", "schema": { "type": "string", "enum": ["cyclonedx", "spdx"], "default": "cyclonedx" } }
+        ]
+      }
+    },
     "/api/mvp-scans/{id}/upload": { "post": { "summary": "Simulated upload / apply fixes flag" } },
     "/api/mobile-scans": { "post": { "summary": "Create mobile scan" }, "get": { "summary": "List mobile scans" } },
     "/api/mobile-scans/{id}/scan": { "post": { "summary": "Run mobile scan" } },
     "/api/web-scans": { "post": { "summary": "Create web scan" }, "get": { "summary": "List web scans" } },
+    "/api/web-scans/{id}/sast-dast-correlation": {
+      "get": {
+        "summary": "SAST vs DAST correlation",
+        "description": "When the web scan has workflowMetadata.sourceRepositoryUrl, finds the latest MVP code scan for the same normalized repository and pairs findings by normalized CWE (DAST vs SAST)."
+      }
+    },
     "/api/web-scans/{id}/scan": { "post": { "summary": "Run web scan" } },
+    "/api/container-scans": {
+      "post": {
+        "summary": "Create container image scan",
+        "description": "Starts an async job: pulls OCI/Distribution v2 manifest from Docker Hub (registry=docker-hub) or a public custom registry URL (registry=custom, registryUrl). Creates findings with category Container Image: layer summary (LOW), mutable tag latest/stable/develop (HIGH), high layer count (MEDIUM), very large combined layer sizes (MEDIUM), or errors/unsupported registry (HIGH/MEDIUM). No Docker daemon; no filesystem layer extraction or CVE matching in this slice."
+      },
+      "get": { "summary": "List container scans" }
+    },
     "/api/findings": {
       "get": {
         "summary": "List findings",
+        "description": "Each finding object may include fixConfidence: score 0–100, explainability string, sideEffectRisk low|medium|high — deterministic heuristic, not ML. MVP SCA findings may include scaReachability: import_referenced | no_import_match | not_analyzed — static import/require heuristic, not a call graph. The Attack path graph page uses this list client-side to build a heuristic MITRE-style phase graph (no separate graph API).",
         "parameters": [
           { "name": "scanId", "in": "query", "schema": { "type": "string" } },
-          { "name": "scanType", "in": "query", "schema": { "type": "string", "enum": ["mvp", "mobile", "web"] } }
+          { "name": "scanType", "in": "query", "schema": { "type": "string", "enum": ["mvp", "mobile", "web", "pipeline", "container", "network", "linter"] } }
         ]
+      }
+    },
+    "/api/findings/{id}": {
+      "get": {
+        "summary": "Get a single finding by id (Shield Advisor / detail views)",
+        "description": "Response includes `fixConfidence` when enriched (same shape as GET /api/findings list items)."
+      }
+    },
+    "/api/security-health": {
+      "get": {
+        "summary": "Security health timeline, MTTR, regressions",
+        "description": "Session or API key (read). Query: days=7|30|90 (default 30, clamped 7–90). Returns timeline (UTC buckets), mttrHours by severity (requires findings.resolved_at), regressionCount (duplicate open vs resolved fingerprint), currentHealthScore. Non-archived findings only."
+      }
+    },
+    "/api/scheduled-scans": {
+      "get": { "summary": "List scheduled scans" },
+      "post": {
+        "summary": "Create scheduled scan",
+        "description": "Body includes scan_config JSON string: { targetScanId (uuid), scanType: mvp|web|mobile }. Server sets next_run_at ~60s out. MVP execution is supported by the in-process engine; web/mobile are skipped until implemented."
+      }
+    },
+    "/api/scheduled-scans/{id}": {
+      "patch": { "summary": "Update scheduled scan (next_run_at reset when frequency/cron changes)" },
+      "delete": { "summary": "Delete scheduled scan" }
+    },
+    "/api/merge-gate/github/report": {
+      "post": {
+        "summary": "GitHub Check Run + optional PR comment",
+        "description": "Session or API key (write). Uses the user’s linked GitHub OAuth token. Body: repoFullName (owner/repo), headSha, conclusion (success|failure|neutral|…), optional checkName, title, summary, text, pullRequestNumber (issue comment on PR), commentBody, dryRun. Disabled in demo mode."
+      }
+    },
+    "/api/merge-gate/status": {
+      "get": {
+        "summary": "Merge gate readiness",
+        "description": "Session or API key (read). Returns githubOAuthConfigured, githubConnected, githubUsername, demoMode."
+      }
+    },
+    "/api/policy/aithonshield/validate": {
+      "post": {
+        "summary": "Parse and validate .aithonshield.yml",
+        "description": "Session or API key (write). Body: { yaml: string }. Returns ok + normalized config or YAML/Zod errors."
+      }
+    },
+    "/api/policy/aithonshield/evaluate": {
+      "post": {
+        "summary": "Evaluate policy.fail_on vs finding counts",
+        "description": "Session or API key (write). Body: { yaml, counts: { critical, high, medium, low } }. Returns pass, violations, failOn."
+      }
+    },
+    "/api/cve-watchlist": {
+      "get": {
+        "summary": "List CVE watchlist entries",
+        "description": "Session or API key (read). Returns { entries }."
+      },
+      "post": {
+        "summary": "Add CVE to watchlist",
+        "description": "Session or API key (write). Body: { cveId, note? }. CVE ID normalized to CVE-YYYY-NNNN+. 409 if duplicate."
+      }
+    },
+    "/api/cve-watchlist/{id}": {
+      "patch": {
+        "summary": "Update watchlist entry",
+        "description": "Session or API key (write). Body: { note?, enabled? }."
+      },
+      "delete": { "summary": "Delete watchlist entry", "description": "Session or API key (write)." }
+    },
+    "/api/cve-watchlist/rescan-findings": {
+      "post": {
+        "summary": "Match existing findings against watchlist",
+        "description": "Session or API key (write). Returns { processed, newAlerts }."
+      }
+    },
+    "/api/onboarding/complete": {
+      "post": {
+        "summary": "Mark onboarding wizard as completed",
+        "description": "Session or API key (write). Sets users.onboarding_completed_at. Returns updated user."
+      }
+    },
+    "/api/sla/summary": {
+      "get": {
+        "summary": "SLA breach and upcoming deadlines",
+        "description": "Session or API key (read). Uses users.sla_policy_hours and open findings. Returns policyHours, breaches, upcoming, openFindingsConsidered."
+      }
+    },
+    "/api/user/sla-policy": {
+      "patch": {
+        "summary": "Update per-severity SLA targets in hours",
+        "description": "Session required (not API key). Body: optional critical, high, medium, low (number or null to clear). Merges into sla_policy_hours JSON."
+      }
+    },
+    "/api/risk-exceptions": {
+      "get": {
+        "summary": "List risk exceptions",
+        "description": "Session or API key (read). Returns { exceptions } with finding title/severity. Expired active exceptions are reconciled on read."
+      },
+      "post": {
+        "summary": "Accept risk for a finding",
+        "description": "Session or API key (write). Body: { findingId, justification, expiresAt? ISO datetime or null }. Sets finding status to accepted-risk. 409 if an active exception already exists."
+      }
+    },
+    "/api/risk-exceptions/revoke-by-finding": {
+      "post": {
+        "summary": "Revoke active exception by finding id",
+        "description": "Session or API key (write). Body: { findingId }. Returns the revoked exception row."
+      }
+    },
+    "/api/risk-exceptions/{id}/revoke": {
+      "post": {
+        "summary": "Revoke a risk exception by id",
+        "description": "Session or API key (write). Returns { ...exception } with status revoked; finding returns to open."
+      }
+    },
+    "/api/compliance/evidence-package": {
+      "get": {
+        "summary": "Download compliance evidence ZIP",
+        "description": "Session or API key (read). Returns application/zip: manifest.json, README.txt, findings.json, findings-summary.csv, audit-events.json, sla-summary.json, risk-exceptions.json. Audit: compliance.evidence_package_download."
+      }
+    },
+    "/api/vex/document": {
+      "get": {
+        "summary": "CycloneDX VEX JSON — workspace",
+        "description": "Session or API key (read). JSON attachment: CycloneDX 1.5 BOM with vulnerabilities[] and analysis.state from findings that mention CVE IDs. Audit: vex.workspace_export."
+      }
+    },
+    "/api/mvp-scans/{id}/vex": {
+      "get": {
+        "summary": "CycloneDX VEX JSON — MVP scan findings",
+        "description": "Session or API key (read). Same VEX shape scoped to findings for scan id (scanType mvp). Audit: vex.mvp_scan_export."
+      }
+    },
+    "/api/tracker-connections": {
+      "get": {
+        "summary": "Jira / Linear connection status",
+        "description": "Session cookie only. Returns jira and linear objects with connected flags and non-secret defaults (site URL, email, project key, team id)."
+      }
+    },
+    "/api/tracker-connections/jira": {
+      "put": {
+        "summary": "Save Jira Cloud credentials",
+        "description": "Session only. Body: siteBaseUrl (https://*.atlassian.net), email, apiToken, defaultProjectKey?, defaultIssueTypeName? (default Task). Token encrypted at rest. Audit: tracker.jira_connect."
+      },
+      "delete": {
+        "summary": "Remove Jira connection",
+        "description": "Session only. Audit: tracker.jira_disconnect."
+      }
+    },
+    "/api/tracker-connections/linear": {
+      "put": {
+        "summary": "Save Linear API key",
+        "description": "Session only. Body: apiKey, defaultTeamId? (UUID for issueCreate). Audit: tracker.linear_connect."
+      },
+      "delete": {
+        "summary": "Remove Linear connection",
+        "description": "Session only. Audit: tracker.linear_disconnect."
+      }
+    },
+    "/api/findings/{findingId}/tracker-issue": {
+      "post": {
+        "summary": "Create Jira or Linear issue from finding",
+        "description": "Session only (not API key). Body: { provider: jira|linear, projectKey?, teamId? }. Disabled in demo mode. Sets finding trackerIssue* fields. Audit: tracker.issue_created. 409 if already linked."
+      }
+    },
+    "/api/webhook-endpoints": {
+      "get": {
+        "summary": "List webhook endpoints",
+        "description": "Session only. Returns array of endpoints with hasSecret flag (secret never exposed). Includes lastDeliveredAt and lastDeliveryStatus."
+      },
+      "post": {
+        "summary": "Create webhook endpoint",
+        "description": "Session only. Body: { name, url (HTTPS), format: json|cef|syslog, secret?, eventFilter? (comma-separated event types), enabled? }. Secret encrypted at rest. Audit: webhook_endpoint.created."
+      }
+    },
+    "/api/webhook-endpoints/{id}": {
+      "patch": {
+        "summary": "Update webhook endpoint",
+        "description": "Session only. Partial body same as create. Audit: webhook_endpoint.updated."
+      },
+      "delete": {
+        "summary": "Delete webhook endpoint",
+        "description": "Session only. Audit: webhook_endpoint.deleted."
+      }
+    },
+    "/api/webhook-endpoints/{id}/test": {
+      "post": {
+        "summary": "Test-fire ping to webhook endpoint",
+        "description": "Session only. Sends a test.ping event to the endpoint and returns { ok, status }."
+      }
+    },
+    "/api/webhook-event-types": {
+      "get": {
+        "summary": "List known webhook event types",
+        "description": "Session only. Returns array of event type strings: scan.completed, finding.created, finding.resolved, sla.breached, risk.accepted, risk.revoked, test.ping."
+      }
+    },
+    "/api/developer-score-cards": {
+      "get": {
+        "summary": "Developer score cards per project",
+        "description": "Session or API key (read). Groups non-archived findings by scan (mvp|mobile|web). Returns { generatedAt, cards[] } with score 0–100, grade A–F, open/resolved/accepted-risk counts, open severities, resolutionRate. Cards sorted lowest score first."
       }
     }
   }

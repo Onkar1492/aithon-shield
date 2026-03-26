@@ -6,6 +6,46 @@
  * MVP, Web, and Mobile scan services.
  */
 
+import type { ScaReachabilityValue } from "@shared/scaReachability";
+
+/**
+ * Dependency structure for SCA (Software Composition Analysis)
+ */
+export interface Dependency {
+  name: string;
+  version: string;
+  type: "npm" | "pip" | "maven" | "gradle" | "go" | "gem" | "composer" | "cargo";
+  file: string; // Path to dependency file
+}
+
+/**
+ * Dependency manifest structure
+ */
+export interface DependencyManifest {
+  dependencies: Dependency[];
+  type: string; // 'npm', 'pip', etc.
+}
+
+/**
+ * Structured proof evidence for DAST findings — captures the exact
+ * HTTP request, response snippet, and matching pattern that confirmed
+ * the vulnerability so reviewers can verify without re-running the scan.
+ */
+export interface DastProofEvidence {
+  requestMethod: string;
+  requestUrl: string;
+  requestHeaders?: Record<string, string>;
+  requestBody?: string;
+  responseStatus: number;
+  responseSnippet: string;
+  matchedPattern: string;
+  matchedLocation: "body" | "header" | "status" | "url";
+  curlCommand: string;
+  confirmed: boolean;
+  confidence: "definite" | "firm" | "tentative";
+  reproductionSteps: string[];
+}
+
 /**
  * Vulnerability structure - represents a detected security vulnerability
  */
@@ -21,6 +61,12 @@ export interface Vulnerability {
   riskScore: number; // 0-100
   exploitabilityScore?: number; // 0-100: How easy to exploit
   impactScore?: number; // 0-100: Business impact if exploited
+  /** Set for Dependency Vulnerability from SCA */
+  scaPackage?: string;
+  scaEcosystem?: Dependency["type"];
+  scaReachability?: ScaReachabilityValue;
+  /** Proof-based DAST evidence (P6-C8) */
+  dastProof?: DastProofEvidence;
 }
 
 /**
@@ -32,6 +78,8 @@ export interface ScanResult {
   scanType: 'mvp' | 'web' | 'mobile';
   completedAt: Date;
   duration?: number; // milliseconds
+  /** CycloneDX + SPDX JSON from parsed dependency manifests (MVP scans only) */
+  sbom?: { cyclonedx: Record<string, unknown>; spdx: Record<string, unknown> } | null;
 }
 
 /**
@@ -52,6 +100,11 @@ export interface MvpScanConfig {
   environment?: string; // e.g., 'development', 'production'
   userId: string;
   scanId: string;
+  /** When set, gates SAST / SCA / Secrets (and skips DAST for repo scans). Empty = run defaults. */
+  securityModules?: string[];
+  /** Used for SBOM metadata */
+  projectName?: string;
+  repositoryUrl?: string;
 }
 
 /**
@@ -63,6 +116,7 @@ export interface WebScanConfig {
   password?: string;
   userId: string;
   scanId: string;
+  securityModules?: string[];
 }
 
 /**
@@ -73,6 +127,7 @@ export interface MobileScanConfig {
   version?: string;
   userId: string;
   scanId: string;
+  securityModules?: string[];
 }
 
 /**
@@ -113,24 +168,6 @@ export interface FormInput {
   name: string;
   type: string;
   required: boolean;
-}
-
-/**
- * Dependency structure for SCA (Software Composition Analysis)
- */
-export interface Dependency {
-  name: string;
-  version: string;
-  type: 'npm' | 'pip' | 'maven' | 'gradle' | 'go' | 'gem' | 'composer' | 'cargo';
-  file: string; // Path to dependency file
-}
-
-/**
- * Dependency manifest structure
- */
-export interface DependencyManifest {
-  dependencies: Dependency[];
-  type: string; // 'npm', 'pip', etc.
 }
 
 /**

@@ -25,7 +25,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Code, Github, Zap, Shield, Upload, CheckCircle, AlertTriangle, Heart, QrCode, Apple, Smartphone, Eye, Info, Copy, Lightbulb, MapPin, Hand, Pencil, Trash2, XCircle, Loader2 } from "lucide-react";
+import { Code, Github, Zap, Shield, Upload, CheckCircle, AlertTriangle, Heart, QrCode, Apple, Smartphone, Eye, Info, Copy, Lightbulb, MapPin, Hand, Pencil, Trash2, XCircle, Loader2, Download } from "lucide-react";
 import { SiReplit, SiVercel } from "react-icons/si";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -38,6 +38,9 @@ import { ChooseWorkflowSection } from "@/components/ChooseWorkflowSection";
 import { EditMvpScanDialog } from "@/components/EditMvpScanDialog";
 import { useScanUpload } from "@/hooks/use-scan-upload";
 import type { MvpCodeScan } from "@shared/schema";
+
+/** API adds sbomAvailable when SBOM blobs are omitted from JSON */
+type MvpScanApi = MvpCodeScan & { sbomAvailable?: boolean };
 import type { ScanType } from "@/hooks/use-scan-findings";
 import { Link, useRoute } from "wouter";
 
@@ -86,7 +89,7 @@ export default function MvpCodeScan() {
   // Shared upload hook for automated fix flow
   const { upload, isUploading } = useScanUpload();
 
-  const { data: scans = [], isLoading } = useQuery<MvpCodeScan[]>({
+  const { data: scans = [], isLoading } = useQuery<MvpScanApi[]>({
     queryKey: ["/api/mvp-scans"],
     refetchInterval: (query) => {
       const data = query.state.data;
@@ -98,7 +101,7 @@ export default function MvpCodeScan() {
     },
   });
 
-  const { data: selectedScan } = useQuery<MvpCodeScan>({
+  const { data: selectedScan } = useQuery<MvpScanApi>({
     queryKey: ["/api/mvp-scans", selectedScanId],
     enabled: !!selectedScanId,
     refetchInterval: (query) => {
@@ -215,6 +218,36 @@ export default function MvpCodeScan() {
       });
     },
   });
+
+  const handleDownloadSbom = async (format: "cyclonedx" | "spdx") => {
+    if (!selectedScanId) return;
+    try {
+      const res = await fetch(`/api/mvp-scans/${selectedScanId}/sbom?format=${format}`, {
+        credentials: "include",
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error((err as { message?: string }).message || res.statusText);
+      }
+      const blob = await res.blob();
+      const cd = res.headers.get("Content-Disposition");
+      const match = cd?.match(/filename="([^"]+)"/);
+      const filename = match?.[1] ?? `sbom-${selectedScanId}-${format}.json`;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast({ title: "SBOM downloaded", description: filename });
+    } catch (e: unknown) {
+      toast({
+        title: "SBOM download failed",
+        description: e instanceof Error ? e.message : "Unknown error",
+        variant: "destructive",
+      });
+    }
+  };
 
   const handleUploadClick = async (withFixes: boolean) => {
     // Ensure a scan is selected (defensive check matching Web workflow)
@@ -468,6 +501,39 @@ export default function MvpCodeScan() {
                       </div>
                     </div>
                   </div>
+
+                  {selectedScan.sbomAvailable && (
+                    <div className="space-y-2 rounded-lg border p-3 bg-muted/20" data-testid={`section-sbom-${selectedScan.id}`}>
+                      <p className="text-sm font-medium">Software bill of materials (SBOM)</p>
+                      <p className="text-xs text-muted-foreground">
+                        CycloneDX 1.5 and SPDX 2.3 JSON generated from dependency manifests discovered during the scan (same inputs as SCA).
+                      </p>
+                      <div className="flex flex-wrap gap-2">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="gap-2"
+                          onClick={() => void handleDownloadSbom("cyclonedx")}
+                          data-testid={`button-sbom-cyclonedx-${selectedScan.id}`}
+                        >
+                          <Download className="h-4 w-4" />
+                          CycloneDX JSON
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="gap-2"
+                          onClick={() => void handleDownloadSbom("spdx")}
+                          data-testid={`button-sbom-spdx-${selectedScan.id}`}
+                        >
+                          <Download className="h-4 w-4" />
+                          SPDX JSON
+                        </Button>
+                      </div>
+                    </div>
+                  )}
 
                   {/* QR Code Preview Section */}
                   {qrCodeData && (

@@ -5,49 +5,72 @@
  * before starting scans, providing clear error messages to users.
  */
 
+import { isDemoMode } from "../demoMode";
+
 /**
- * Validate MVP Code Scan repository URL
+ * Validate MVP Code Scan repository URL.
+ * Demo mode (AITHON_DEMO_MODE + dev): any non-empty string — used for UI/flow testing.
+ * Non-production: only require a non-empty string (local flexibility).
+ * Production: require https? URL and common Git host / path patterns.
  */
 export function validateMvpRepositoryUrl(repositoryUrl: string): { valid: boolean; error?: string } {
   if (!repositoryUrl || typeof repositoryUrl !== 'string') {
     return { valid: false, error: 'Repository URL is required and must be a valid string.' };
   }
 
-  // Check if URL starts with http:// or https://
-  if (!/^https?:\/\//.test(repositoryUrl)) {
+  const trimmed = repositoryUrl.trim();
+  if (!trimmed) {
+    return { valid: false, error: 'Repository URL is required.' };
+  }
+
+  if (isDemoMode()) {
+    return { valid: true };
+  }
+
+  if (process.env.NODE_ENV !== 'production') {
+    return { valid: true };
+  }
+
+  // Production: allow trial/demo placeholders containing "demo" (case-insensitive), e.g. "DEMO"
+  if (/demo/i.test(trimmed)) {
+    return { valid: true };
+  }
+
+  // --- Production: Git-style URL conventions ---
+  if (!/^https?:\/\//.test(trimmed)) {
     return {
       valid: false,
-      error: 'Repository URL must be a valid URL starting with http:// or https://. Example: https://github.com/user/repo'
+      error:
+        'Repository URL must be a valid URL starting with http:// or https://. Example: https://github.com/user/repo',
     };
   }
 
-  // Check if it's a valid Git repository URL format
-  // Supports GitHub, GitLab, Bitbucket, and other git URLs
   const gitUrlPattern = /^https?:\/\/(github\.com|gitlab\.com|bitbucket\.org|.*\/.*\.git|.*\/.*\/.*)/;
-  if (!gitUrlPattern.test(repositoryUrl)) {
+  if (!gitUrlPattern.test(trimmed)) {
     return {
       valid: false,
-      error: 'Repository URL must be a valid Git repository URL. Examples:\n' +
-             '  • https://github.com/username/repository\n' +
-             '  • https://gitlab.com/username/repository\n' +
-             '  • https://bitbucket.org/username/repository'
+      error:
+        'Repository URL must be a valid Git repository URL. Examples:\n' +
+        '  • https://github.com/username/repository\n' +
+        '  • https://gitlab.com/username/repository\n' +
+        '  • https://bitbucket.org/username/repository',
     };
   }
 
-  // Additional check: ensure it has at least user/repo structure
   try {
-    const url = new URL(repositoryUrl);
-    const pathParts = url.pathname.split('/').filter(p => p);
+    const url = new URL(trimmed);
+    const pathParts = url.pathname.split('/').filter((p) => p);
     if (pathParts.length < 2) {
       return {
         valid: false,
-        error: 'Repository URL must include both username and repository name. Example: https://github.com/username/repo'
+        error:
+          'Repository URL must include both username and repository name. Example: https://github.com/username/repo',
       };
     }
   } catch {
     return {
       valid: false,
-      error: 'Repository URL is not a valid URL format.'
+      error: 'Repository URL is not a valid URL format.',
     };
   }
 
@@ -60,6 +83,19 @@ export function validateMvpRepositoryUrl(repositoryUrl: string): { valid: boolea
 export function validateWebAppUrl(url: string): { valid: boolean; error?: string } {
   if (!url || typeof url !== 'string') {
     return { valid: false, error: 'Application URL is required and must be a valid string.' };
+  }
+
+  const t = url.trim();
+  if (!t) {
+    return { valid: false, error: 'Application URL is required.' };
+  }
+
+  if (isDemoMode()) {
+    return { valid: true };
+  }
+
+  if (process.env.NODE_ENV !== 'production') {
+    return { valid: true };
   }
 
   // Check if URL starts with http:// or https://
@@ -100,6 +136,14 @@ export function validateWebAppAuth(
   authApiKey?: string | null,
   authLoginUrl?: string | null
 ): { valid: boolean; error?: string } {
+  if (isDemoMode()) {
+    return { valid: true };
+  }
+
+  if (process.env.NODE_ENV !== 'production') {
+    return { valid: true };
+  }
+
   if (!authRequired) {
     return { valid: true };
   }
@@ -164,6 +208,20 @@ export function validateMobileAppScan(
       valid: false,
       error: 'Platform must be either "ios" or "android".'
     };
+  }
+
+  if (isDemoMode()) {
+    if (!appId || typeof appId !== 'string' || appId.trim().length === 0) {
+      return { valid: false, error: 'App Store URL or Bundle ID is required.' };
+    }
+    return { valid: true };
+  }
+
+  if (process.env.NODE_ENV !== 'production') {
+    if (!appId || typeof appId !== 'string' || appId.trim().length === 0) {
+      return { valid: false, error: 'App Store URL or Bundle ID is required.' };
+    }
+    return { valid: true };
   }
 
   if (!appId || typeof appId !== 'string' || appId.trim().length === 0) {

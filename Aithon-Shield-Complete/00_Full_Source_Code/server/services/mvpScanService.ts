@@ -22,9 +22,13 @@ import {
   detectOWASPTop10Issues,
 } from './securityAnalyzer';
 import { detectSecretsInFiles } from './secretsDetector';
-import { performSCAScan } from './scaAnalyzer';
-import type { Vulnerability, ScanResult, MvpScanConfig, ProgressCallback } from './types';
+import { performSCAScan, parseDependencies } from './scaAnalyzer';
+import { performIaCScan } from './iacScanner';
+import { buildSbomFromManifest } from './sbomGenerator';
+import type { Vulnerability, ScanResult, MvpScanConfig, ProgressCallback } from "./types";
 import { validateMvpRepositoryUrl } from './scanValidation';
+import { isDemoMode, shouldUseMvpDeterministicScan } from "../demoMode";
+import { demoScanVulnerabilities } from "../demoScanResults";
 
 const execAsync = promisify(exec);
 
@@ -235,10 +239,11 @@ export async function performSASTScan(
  * 
  * Orchestrates the complete scanning process:
  * 1. Clone repository (0-20%)
- * 2. SAST analysis (20-60%)
- * 3. SCA analysis (60-80%)
- * 4. Secrets detection (80-95%)
- * 5. Finalize (95-100%)
+ * 2. SAST analysis (20-52%)
+ * 3. SCA analysis (52-66%)
+ * 4. IaC analysis (66-76%)
+ * 5. Secrets detection (76-90%)
+ * 6. Finalize (90-100%)
  */
 export async function scanMvpCode(
   repositoryUrl: string,
@@ -247,6 +252,24 @@ export async function scanMvpCode(
 ): Promise<ScanResult> {
   const startTime = Date.now();
   let tempDir: string | null = null;
+
+  if (shouldUseMvpDeterministicScan()) {
+    const stageMsg = isDemoMode()
+      ? "Demo mode: skipping live git clone and static analysis"
+      : "Non-production: skipping live git clone (set AITHON_LIVE_MVP_SCANS=true for a real clone)";
+    if (progressCallback) {
+      await progressCallback(5, stageMsg);
+      await progressCallback(100, isDemoMode() ? "Demo MVP scan complete" : "MVP scan complete (deterministic dev run)");
+    }
+    return {
+      vulnerabilities: demoScanVulnerabilities("mvp"),
+      scanId: config.scanId,
+      scanType: "mvp",
+      completedAt: new Date(),
+      duration: Date.now() - startTime,
+      sbom: null,
+    };
+  }
   
   try {
     // Step 1: Clone Repository (0-20%)
@@ -265,89 +288,140 @@ export async function scanMvpCode(
       }
     });
     
-    // Step 2: SAST Analysis (20-60%)
-    const sastVulnerabilities = await performSASTScan(
-      tempDir,
-      config.language,
-      async (progress, stage) => {
-        if (progressCallback) {
-          // Map SAST progress (0-100) to overall progress (20-60)
-          await progressCallback(20 + Math.floor(progress * 0.4), stage);
-        }
-      }
-    );
-    
-    // Step 3: SCA Analysis (60-80%)
-    if (progressCallback) {
-      await progressCallback(60, 'Starting dependency vulnerability scan...');
+    const defaultMods = ["SAST", "SCA", "IaC", "Secrets"];
+    const mods = config.securityModules?.length ? config.securityModules : defaultMods;
+    const runSast = mods.includes("SAST");
+    const runSca = mods.includes("SCA");
+    const runIac = mods.includes("IaC");
+    const runSecrets = mods.includes("Secrets");
+
+    if (mods.includes("DAST") && progressCallback) {
+      await progressCallback(18, "Skipping DAST (dynamic testing applies to deployed URLs, not repo clone)");
     }
-    
-    const scaVulnerabilities = await performSCAScan(
-      tempDir,
-      async (progress, stage) => {
-        if (progressCallback) {
-          // Map SCA progress (0-100) to overall progress (60-80)
-          await progressCallback(60 + Math.floor(progress * 0.2), stage);
-        }
-      }
-    );
-    
-    // Step 4: Secrets Detection (80-95%)
-    if (progressCallback) {
-      await progressCallback(80, 'Scanning for hardcoded secrets...');
-    }
-    
-    // Find all files for secrets scanning
-    const allFiles: string[] = [];
-    async function collectFiles(dir: string): Promise<void> {
-      try {
-        const entries = await fs.readdir(dir, { withFileTypes: true });
-        for (const entry of entries) {
-          const fullPath = path.join(dir, entry.name);
-          if (entry.name.startsWith('.') || 
-              entry.name === 'node_modules' ||
-              entry.name === 'dist' ||
-              entry.name === 'build') {
-            continue;
+
+    // Step 2: SAST Analysis (20-52%)
+    let sastVulnerabilities: Vulnerability[] = [];
+    if (runSast) {
+      sastVulnerabilities = await performSASTScan(
+        tempDir,
+        config.language,
+        async (progress, stage) => {
+          if (progressCallback) {
+            await progressCallback(20 + Math.floor(progress * 0.32), stage);
           }
-          if (entry.isDirectory()) {
-            await collectFiles(fullPath);
-          } else if (entry.isFile()) {
-            const relativePath = path.relative(tempDir!, fullPath);
-            allFiles.push(relativePath);
-          }
-        }
-      } catch (error) {
-        // Skip directories that can't be read
-      }
+        },
+      );
+    } else if (progressCallback) {
+      await progressCallback(20, "SAST skipped (module disabled)");
     }
-    await collectFiles(tempDir);
-    
-    const secretsVulnerabilities = await detectSecretsInFiles(
-      allFiles,
-      tempDir,
-      async (progress, stage) => {
+
+    // Step 3: SCA Analysis (52-66%)
+    let scaVulnerabilities: Vulnerability[] = [];
+    if (runSca) {
+      if (progressCallback) {
+        await progressCallback(52, "Starting dependency vulnerability scan...");
+      }
+      scaVulnerabilities = await performSCAScan(
+        tempDir,
+        async (progress, stage) => {
+          if (progressCallback) {
+            await progressCallback(52 + Math.floor(progress * 0.14), stage);
+          }
+        },
+      );
+    } else if (progressCallback) {
+      await progressCallback(52, "SCA skipped (module disabled)");
+    }
+
+    // Step 4: IaC scan (66-76%)
+    let iacVulnerabilities: Vulnerability[] = [];
+    if (runIac) {
+      if (progressCallback) {
+        await progressCallback(66, "Scanning infrastructure as code...");
+      }
+      iacVulnerabilities = await performIaCScan(tempDir, async (progress, stage) => {
         if (progressCallback) {
-          // Map secrets progress (0-100) to overall progress (80-95)
-          await progressCallback(80 + Math.floor(progress * 0.15), stage);
+          await progressCallback(66 + Math.floor(progress * 0.1), stage);
+        }
+      });
+    } else if (progressCallback) {
+      await progressCallback(66, "IaC scan skipped (module disabled)");
+    }
+
+    // Step 5: Secrets Detection (76-90%)
+    let secretsVulnerabilities: Vulnerability[] = [];
+    if (runSecrets) {
+      if (progressCallback) {
+        await progressCallback(76, "Scanning for hardcoded secrets...");
+      }
+      const allFiles: string[] = [];
+      async function collectFiles(dir: string): Promise<void> {
+        try {
+          const entries = await fs.readdir(dir, { withFileTypes: true });
+          for (const entry of entries) {
+            const fullPath = path.join(dir, entry.name);
+            if (
+              entry.name.startsWith(".") ||
+              entry.name === "node_modules" ||
+              entry.name === "dist" ||
+              entry.name === "build"
+            ) {
+              continue;
+            }
+            if (entry.isDirectory()) {
+              await collectFiles(fullPath);
+            } else if (entry.isFile()) {
+              const relativePath = path.relative(tempDir!, fullPath);
+              allFiles.push(relativePath);
+            }
+          }
+        } catch {
+          // Skip directories that can't be read
         }
       }
-    );
+      await collectFiles(tempDir);
+      secretsVulnerabilities = await detectSecretsInFiles(
+        allFiles,
+        tempDir,
+        async (progress, stage) => {
+          if (progressCallback) {
+            await progressCallback(76 + Math.floor(progress * 0.14), stage);
+          }
+        },
+      );
+    } else if (progressCallback) {
+      await progressCallback(76, "Secrets scan skipped (module disabled)");
+    }
     
-    // Step 5: Finalize (95-100%)
+    // Step 6: Finalize (90-100%)
     if (progressCallback) {
-      await progressCallback(95, 'Aggregating results...');
+      await progressCallback(90, 'Aggregating results...');
     }
     
     // Combine all vulnerabilities
     const allVulnerabilities = [
       ...sastVulnerabilities,
       ...scaVulnerabilities,
+      ...iacVulnerabilities,
       ...secretsVulnerabilities,
     ];
     
     const duration = Date.now() - startTime;
-    
+
+    // SBOM from SCA manifests (same dependency parse as SCA) before temp dir cleanup
+    let sbom: ScanResult["sbom"] = null;
+    if (tempDir) {
+      try {
+        const manifest = await parseDependencies(tempDir);
+        sbom = buildSbomFromManifest(manifest, {
+          projectName: config.projectName || "repository",
+          repositoryUrl: config.repositoryUrl || "https://example.invalid",
+        });
+      } catch {
+        sbom = null;
+      }
+    }
+
     // Clean up temp directory
     if (tempDir) {
       await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
@@ -364,6 +438,7 @@ export async function scanMvpCode(
       scanType: 'mvp',
       completedAt: new Date(),
       duration,
+      sbom,
     };
   } catch (error: any) {
     // Clean up temp directory on error

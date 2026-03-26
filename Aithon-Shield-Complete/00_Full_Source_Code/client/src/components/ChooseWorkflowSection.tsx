@@ -8,7 +8,7 @@ import { ExistingAppWorkflowDialog } from "@/components/ExistingAppWorkflowDialo
 interface ChooseWorkflowSectionProps {
   title?: string;
   description?: string;
-  defaultAppType?: "mvp" | "mobile" | "web";
+  defaultAppType?: "mvp" | "mobile" | "web" | "container";
   hideTabs?: boolean;
 }
 

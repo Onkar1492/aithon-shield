@@ -1,0 +1,99 @@
+{
+  "name": "aithon-shield",
+  "displayName": "Aithon Shield",
+  "description": "View security findings, open scans in the browser, and mark findings resolved.",
+  "version": "0.1.0",
+  "publisher": "aithon-shield",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onView:aithonShieldFindings"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "configuration": {
+      "title": "Aithon Shield",
+      "properties": {
+        "aithonShield.baseUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:5001",
+          "description": "Aithon Shield app base URL (same origin as the web UI)."
+        }
+      }
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "aithon-shield-sidebar",
+          "title": "Aithon Shield",
+          "icon": "media/shield.svg"
+        }
+      ]
+    },
+    "views": {
+      "aithon-shield-sidebar": [
+        {
+          "id": "aithonShieldFindings",
+          "name": "Findings",
+          "contextualTitle": "Aithon Shield Findings"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "aithonShield.setApiKey",
+        "title": "Aithon Shield: Set API Key"
+      },
+      {
+        "command": "aithonShield.refreshFindings",
+        "title": "Aithon Shield: Refresh Findings",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "aithonShield.openInBrowser",
+        "title": "Aithon Shield: Open Scan in Browser"
+      },
+      {
+        "command": "aithonShield.markResolved",
+        "title": "Aithon Shield: Mark Finding Resolved"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "aithonShield.refreshFindings",
+          "when": "view == aithonShieldFindings",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "aithonShield.openInBrowser",
+          "when": "view == aithonShieldFindings && viewItem == findingOpen",
+          "group": "inline"
+        },
+        {
+          "command": "aithonShield.markResolved",
+          "when": "view == aithonShieldFindings && viewItem == findingOpen",
+          "group": "inline"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^3.7.1",
+    "typescript": "^5.5.0"
+  }
+}

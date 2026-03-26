@@ -9,29 +9,56 @@ import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { Code, Smartphone, Globe, Upload, CheckCircle, GitBranch, Loader2, ChevronDown, ChevronUp, AlertTriangle, Info } from "lucide-react";
+import {
+  Code,
+  Smartphone,
+  Globe,
+  Upload,
+  CheckCircle,
+  GitBranch,
+  Loader2,
+  ChevronDown,
+  ChevronUp,
+  AlertTriangle,
+  Info,
+  Database,
+} from "lucide-react";
 import { InfoTooltip } from "@/components/InfoTooltip";
 import { useToast } from "@/hooks/use-toast";
 import { useLocation } from "wouter";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+import { pollScanUploadProgress } from "@/lib/uploadScanPoll";
 import { UploadWithoutFixesWarningDialog } from "@/components/UploadWithoutFixesWarningDialog";
 import { UploadWithFixesOptionsDialog } from "@/components/UploadWithFixesOptionsDialog";
 import { PostFixValidationDialog } from "@/components/PostFixValidationDialog";
 import type { ScanType } from "@/hooks/use-scan-findings";
 import type { Finding } from "@shared/schema";
 
+type WorkflowAppType = "mvp" | "mobile" | "web" | "container";
+
 interface NewAppWorkflowDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  defaultAppType?: "mvp" | "mobile" | "web";
+  defaultAppType?: WorkflowAppType;
   hideTabs?: boolean;
 }
+
+type AppConfigPayload = {
+  demoMode: boolean;
+  demoStrictScanTargets?: boolean;
+  demoScanHint: string | null;
+};
 
 export function NewAppWorkflowDialog({ open, onOpenChange, defaultAppType, hideTabs = false }: NewAppWorkflowDialogProps) {
   const [, setLocation] = useLocation();
   const { toast } = useToast();
-  const [appType, setAppType] = useState<"mvp" | "mobile" | "web">(defaultAppType || "mvp");
+  const { data: appConfig } = useQuery<AppConfigPayload>({
+    queryKey: ["/api/app-config"],
+  });
+  /** Production build + non-demo: enforce parseable URLs. Dev or demo mode: any non-empty target text. */
+  const strictProdScanUrls = import.meta.env.PROD && appConfig?.demoMode !== true;
+  const [appType, setAppType] = useState<WorkflowAppType>(defaultAppType || "mvp");
   
   // Reset state when dialog opens or defaultAppType changes
   useEffect(() => {
@@ -57,7 +84,7 @@ export function NewAppWorkflowDialog({ open, onOpenChange, defaultAppType, hideT
   const [mvpWebDeployUrl, setMvpWebDeployUrl] = useState("");
   const [mvpTechStack, setMvpTechStack] = useState("");
   const [mvpCloudInfra, setMvpCloudInfra] = useState("");
-  const [mvpSecurityModules, setMvpSecurityModules] = useState<string[]>(["SAST", "SCA", "Secrets"]);
+  const [mvpSecurityModules, setMvpSecurityModules] = useState<string[]>(["SAST", "SCA", "IaC", "Secrets"]);
   const [workflowAdvancedOpen, setWorkflowAdvancedOpen] = useState(false);
   
   // Mobile fields
@@ -82,6 +109,11 @@ export function NewAppWorkflowDialog({ open, onOpenChange, defaultAppType, hideT
   const [webAuthTokenHeader, setWebAuthTokenHeader] = useState("Authorization");
   const [webSecurityModules, setWebSecurityModules] = useState<string[]>(["SAST", "DAST"]);
   const [mobileSecurityModules, setMobileSecurityModules] = useState<string[]>(["SAST", "SCA", "Secrets"]);
+
+  const [containerImageName, setContainerImageName] = useState("");
+  const [containerImageTag, setContainerImageTag] = useState("latest");
+  const [containerRegistry, setContainerRegistry] = useState("docker-hub");
+  const [containerRegistryUrl, setContainerRegistryUrl] = useState("");
 
   // Scan results
   const [scanResults, setScanResults] = useState({
@@ -122,60 +154,62 @@ export function NewAppWorkflowDialog({ open, onOpenChange, defaultAppType, hideT
   };
 
   const createScanMutation = useMutation({
-    mutationFn: async ({ scanType, scanData }: { scanType: string; scanData: any }) => {
-      let response;
+    mutationFn: async ({
+      scanType,
+      scanData,
+    }: {
+      scanType: WorkflowAppType;
+      scanData: Record<string, unknown>;
+    }) => {
+      let response: Response;
       if (scanType === "mvp") {
         response = await apiRequest("POST", "/api/mvp-scans", scanData);
       } else if (scanType === "mobile") {
         response = await apiRequest("POST", "/api/mobile-scans", scanData);
+      } else if (scanType === "container") {
+        response = await apiRequest("POST", "/api/container-scans", scanData);
       } else {
         response = await apiRequest("POST", "/api/web-scans", scanData);
       }
       const result = await response.json();
-      return { ...result, scanType }; // Include scan type in response
+      return { ...result, scanType };
     },
-    onSuccess: async (data: any) => {
-      // Scan created successfully, now trigger the actual scan
+    onSuccess: async (data: { id: string; scanType: WorkflowAppType }) => {
       const scanId = data.id;
-      const scanType = data.scanType; // Use captured scan type, not state
-      setCurrentScanId(scanId); // Store scan ID for later use
-      
-      try {
-        // Trigger the scan endpoint to actually run the scan
-        await apiRequest("POST", `/api/${scanType}-scans/${scanId}/scan`);
-        
-        // Poll for scan completion
+      const scanType = data.scanType;
+      setCurrentScanId(scanId);
+
+      const pollScanUntilDone = (
+        apiPath: string,
+        invalidateKey: string,
+        findingsScanType: string,
+        maxPollAttempts: number,
+      ) => {
         let pollCount = 0;
-        const maxPollAttempts = 60; // 60 seconds max
-        
         const pollInterval = setInterval(async () => {
           try {
             pollCount++;
-            const response = await apiRequest("GET", `/api/${scanType}-scans/${scanId}`);
-            const scanData = await response.json();
-            
-            if (scanData.scanStatus === "completed" || scanData.scanStatus === "failed") {
+            const response = await apiRequest("GET", `${apiPath}/${scanId}`);
+            const scanRow = await response.json();
+
+            if (scanRow.scanStatus === "completed" || scanRow.scanStatus === "failed") {
               clearInterval(pollInterval);
-              queryClient.invalidateQueries({ queryKey: [`/api/${scanType}-scans`] });
+              queryClient.invalidateQueries({ queryKey: [invalidateKey] });
               queryClient.invalidateQueries({ queryKey: ["/api/findings"] });
-              
-              if (scanData.scanStatus === "completed") {
-                // Update UI with actual scan results from database
+
+              if (scanRow.scanStatus === "completed") {
                 setScanResults({
-                  total: scanData.findingsCount || 0,
-                  critical: scanData.criticalCount || 0,
-                  high: scanData.highCount || 0,
-                  medium: scanData.mediumCount || 0,
-                  low: scanData.lowCount || 0
+                  total: scanRow.findingsCount || 0,
+                  critical: scanRow.criticalCount || 0,
+                  high: scanRow.highCount || 0,
+                  medium: scanRow.mediumCount || 0,
+                  low: scanRow.lowCount || 0,
                 });
-                
-                // Fetch actual findings from database
-                await fetchFindings(scanId, scanType);
-                
+                await fetchFindings(scanId, findingsScanType);
                 setScanStatus("completed");
                 toast({
                   title: "Scan Complete",
-                  description: `Found ${scanData.findingsCount || 0} security issues. Check Findings page for details.`,
+                  description: `Found ${scanRow.findingsCount || 0} security issues. Check Findings page for details.`,
                 });
               } else {
                 setScanStatus("idle");
@@ -186,7 +220,6 @@ export function NewAppWorkflowDialog({ open, onOpenChange, defaultAppType, hideT
                 });
               }
             } else if (pollCount >= maxPollAttempts) {
-              // Timeout after 60 seconds
               clearInterval(pollInterval);
               setScanStatus("idle");
               toast({
@@ -205,21 +238,32 @@ export function NewAppWorkflowDialog({ open, onOpenChange, defaultAppType, hideT
               variant: "destructive",
             });
           }
-        }, 1000); // Poll every second
-        
-      } catch (error) {
+        }, 1000);
+      };
+
+      try {
+        if (scanType === "container") {
+          pollScanUntilDone("/api/container-scans", "/api/container-scans", "container", 120);
+          return;
+        }
+
+        await apiRequest("POST", `/api/${scanType}-scans/${scanId}/scan`);
+        pollScanUntilDone(`/api/${scanType}-scans`, `/api/${scanType}-scans`, scanType, 60);
+      } catch (error: unknown) {
+        const msg = error instanceof Error ? error.message : "Failed to start scan";
         toast({
-          title: "Error",
-          description: "Failed to start scan",
+          title: "Could not start scan",
+          description: msg,
           variant: "destructive",
         });
         setScanStatus("idle");
       }
     },
-    onError: () => {
+    onError: (error: unknown) => {
+      const msg = error instanceof Error ? error.message : "Failed to create scan";
       toast({
-        title: "Error",
-        description: "Failed to create scan",
+        title: "Could not create scan",
+        description: msg,
         variant: "destructive",
       });
       setScanStatus("idle");
@@ -229,6 +273,10 @@ export function NewAppWorkflowDialog({ open, onOpenChange, defaultAppType, hideT
   const branchNormalized = branch.trim() || "main";
 
   const getUploadDestinationDisplay = () => {
+    if (appType === "container") {
+      const tag = containerImageTag.trim() || "latest";
+      return `${containerImageName.trim() || "image"}:${tag}`;
+    }
     if (appType === "mvp") {
       if (mvpDeployKind === "web" && mvpWebDeployUrl.trim()) return `Web: ${mvpWebDeployUrl.trim()}`;
       if (mvpDeployKind === "ios" || mvpDeployKind === "android") {
@@ -243,6 +291,7 @@ export function NewAppWorkflowDialog({ open, onOpenChange, defaultAppType, hideT
   };
 
   const getUploadDestinationShortLabel = () => {
+    if (appType === "container") return "container image";
     if (appType === "mvp") {
       if (mvpDeployKind === "web") return "Web URL";
       if (mvpDeployKind === "ios") return "iOS App Store";
@@ -265,23 +314,18 @@ export function NewAppWorkflowDialog({ open, onOpenChange, defaultAppType, hideT
         toast({ title: "Missing Information", description: "Please provide a repository URL to scan", variant: "destructive" });
         return;
       }
-      if (mvpDeployKind === "ios" || mvpDeployKind === "android") {
-        if (!mvpBundleId.trim()) {
+      if (strictProdScanUrls) {
+        try {
+          // eslint-disable-next-line no-new
+          new URL(repositoryUrl.trim());
+        } catch {
           toast({
-            title: "Missing Information",
-            description: "Provide a bundle ID / package name for the selected store, or set deployment to Scan only or Web.",
+            title: "Invalid repository URL",
+            description: "Use a full URL starting with https:// (e.g. https://github.com/octocat/Hello-World).",
             variant: "destructive",
           });
           return;
         }
-      }
-      if (mvpDeployKind === "web" && !mvpWebDeployUrl.trim()) {
-        toast({
-          title: "Missing Information",
-          description: "Provide a web deployment URL or choose a different deployment option.",
-          variant: "destructive",
-        });
-        return;
       }
     }
 
@@ -308,6 +352,19 @@ export function NewAppWorkflowDialog({ open, onOpenChange, defaultAppType, hideT
       if (!webDomainUrl.trim()) {
         toast({ title: "Missing Information", description: "Please provide the live domain URL to scan", variant: "destructive" });
         return;
+      }
+      if (strictProdScanUrls) {
+        try {
+          // eslint-disable-next-line no-new
+          new URL(webDomainUrl.trim());
+        } catch {
+          toast({
+            title: "Invalid application URL",
+            description: "Use a full URL starting with https:// (e.g. https://example.com).",
+            variant: "destructive",
+          });
+          return;
+        }
       }
       if (webAuthRequired) {
         if (webAuthType === "basic" || webAuthType === "form") {
@@ -341,28 +398,45 @@ export function NewAppWorkflowDialog({ open, onOpenChange, defaultAppType, hideT
       }
     }
 
+    if (appType === "container") {
+      if (!containerImageName.trim()) {
+        toast({
+          title: "Missing Information",
+          description: "Enter an image repository (e.g. nginx or bitnami/redis).",
+          variant: "destructive",
+        });
+        return;
+      }
+      if (containerRegistry === "custom" && !containerRegistryUrl.trim()) {
+        toast({
+          title: "Missing Information",
+          description: "For a custom registry, enter the base URL (OCI v2, e.g. https://registry.example.io).",
+          variant: "destructive",
+        });
+        return;
+      }
+    }
+
     setScanStatus("scanning");
 
     const webMods = webSecurityModules.length > 0 ? webSecurityModules : ["SAST", "DAST", "SCA", "Secrets"];
-    const mvpMods = mvpSecurityModules.length > 0 ? mvpSecurityModules : ["SAST", "SCA", "Secrets"];
+    const mvpMods = mvpSecurityModules.length > 0 ? mvpSecurityModules : ["SAST", "SCA", "IaC", "Secrets"];
     const mobMods = mobileSecurityModules.length > 0 ? mobileSecurityModules : ["SAST", "SCA", "Secrets"];
 
-    const scanData =
+    const scanData: Record<string, unknown> =
       appType === "mvp"
         ? {
             projectName,
             repositoryUrl: repositoryUrl.trim(),
             platform: sourceRepo,
             branch: branchNormalized,
-            targetAppStore: mvpDeployKind === "ios" || mvpDeployKind === "android" ? mvpDeployKind : null,
-            appStoreBundleId:
-              mvpDeployKind === "ios" || mvpDeployKind === "android" ? mvpBundleId.trim() || null : null,
+            targetAppStore: null,
+            appStoreBundleId: null,
             workflowMetadata: {
               techStackHint: mvpTechStack.trim() || undefined,
               cloudInfraHint: mvpCloudInfra.trim() || undefined,
               securityModules: mvpMods,
-              mvpDeployKind,
-              mvpWebDeployUrl: mvpDeployKind === "web" ? mvpWebDeployUrl.trim() || undefined : undefined,
+              mvpDeployKind: "none" as const,
             },
           }
         : appType === "mobile"
@@ -379,25 +453,40 @@ export function NewAppWorkflowDialog({ open, onOpenChange, defaultAppType, hideT
                 securityModules: mobMods,
               },
             }
-          : {
-              appName: webAppName,
-              appUrl: webDomainUrl.trim(),
-              hostingPlatform: webCloudHosting || "other",
-              scanDepth:
-                webScanDepth === "shallow" ? "quick" : webScanDepth === "moderate" ? "standard" : "comprehensive",
-              authRequired: webAuthRequired,
-              authType: webAuthRequired ? webAuthType : null,
-              authUsername: webAuthRequired ? webAuthUsername : null,
-              authPassword: webAuthRequired ? webAuthPassword : null,
-              authLoginUrl: webAuthRequired && webAuthType === "form" ? webAuthLoginUrl : null,
-              authApiKey: webAuthRequired && webAuthType === "api-key" ? webAuthApiKey : null,
-              authTokenHeader: webAuthRequired && webAuthType === "api-key" ? webAuthTokenHeader : null,
-              workflowMetadata: {
-                sourceRepositoryUrl: repositoryUrl.trim() || undefined,
-                sourceBranch: branchNormalized,
-                securityModules: webMods,
-              },
-            };
+          : appType === "container"
+            ? {
+                scanType: "docker-image",
+                imageName: containerImageName.trim(),
+                imageTag: containerImageTag.trim() || "latest",
+                registry: containerRegistry,
+                registryUrl:
+                  containerRegistry === "custom" ? containerRegistryUrl.trim() || null : null,
+                scanStatus: "pending",
+                findingsCount: 0,
+                criticalCount: 0,
+                highCount: 0,
+                mediumCount: 0,
+                lowCount: 0,
+              }
+            : {
+                appName: webAppName,
+                appUrl: webDomainUrl.trim(),
+                hostingPlatform: webCloudHosting || "other",
+                scanDepth:
+                  webScanDepth === "shallow" ? "quick" : webScanDepth === "moderate" ? "standard" : "comprehensive",
+                authRequired: webAuthRequired,
+                authType: webAuthRequired ? webAuthType : null,
+                authUsername: webAuthRequired ? webAuthUsername : null,
+                authPassword: webAuthRequired ? webAuthPassword : null,
+                authLoginUrl: webAuthRequired && webAuthType === "form" ? webAuthLoginUrl : null,
+                authApiKey: webAuthRequired && webAuthType === "api-key" ? webAuthApiKey : null,
+                authTokenHeader: webAuthRequired && webAuthType === "api-key" ? webAuthTokenHeader : null,
+                workflowMetadata: {
+                  sourceRepositoryUrl: repositoryUrl.trim() || undefined,
+                  sourceBranch: branchNormalized,
+                  securityModules: webMods,
+                },
+              };
 
     createScanMutation.mutate({ scanType: appType, scanData });
   };
@@ -412,14 +501,56 @@ export function NewAppWorkflowDialog({ open, onOpenChange, defaultAppType, hideT
       return;
     }
 
+    if (appType === "container") {
+      toast({
+        title: "Not applicable",
+        description: "Container image scans do not use fix-and-upload. View findings or scan details instead.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    if (appType === "mvp") {
+      if (mvpDeployKind === "ios" || mvpDeployKind === "android") {
+        if (!mvpBundleId.trim()) {
+          toast({
+            title: "Deployment",
+            description: "Add a bundle ID or package name for the selected store, or choose Scan only / Web.",
+            variant: "destructive",
+          });
+          return;
+        }
+      }
+      if (mvpDeployKind === "web" && !mvpWebDeployUrl.trim()) {
+        toast({
+          title: "Deployment",
+          description: "Add a web deployment URL or set deployment to Scan only.",
+          variant: "destructive",
+        });
+        return;
+      }
+    }
+
     const destination = getUploadDestinationDisplay();
 
     try {
-      await apiRequest("PATCH", `/api/${appType}-scans/${currentScanId}`, {
+      const patchBody: Record<string, unknown> = {
         fixesApplied: withFixes,
         uploadPreference: withFixes ? "fix-and-upload" : "upload-without-fixes",
         autoUploadDestination: destination,
-      });
+      };
+      if (appType === "mvp") {
+        patchBody.targetAppStore =
+          mvpDeployKind === "ios" || mvpDeployKind === "android" ? mvpDeployKind : null;
+        patchBody.appStoreBundleId =
+          mvpDeployKind === "ios" || mvpDeployKind === "android" ? mvpBundleId.trim() || null : null;
+        patchBody.workflowMetadata = {
+          mvpDeployKind,
+          mvpWebDeployUrl: mvpDeployKind === "web" ? mvpWebDeployUrl.trim() || undefined : undefined,
+        };
+      }
+
+      await apiRequest("PATCH", `/api/${appType}-scans/${currentScanId}`, patchBody);
 
       const endpoint = runTests
         ? `/api/${appType}-scans/${currentScanId}/upload-and-test`
@@ -427,7 +558,7 @@ export function NewAppWorkflowDialog({ open, onOpenChange, defaultAppType, hideT
 
       setScanStatus("uploading");
       setUploadProgress(0);
-      setUploadStatus("Preparing upload…");
+      setUploadStatus("Queued…");
 
       await apiRequest("POST", endpoint, {
         withFixes,
@@ -436,27 +567,38 @@ export function NewAppWorkflowDialog({ open, onOpenChange, defaultAppType, hideT
       queryClient.invalidateQueries({ queryKey: [`/api/${appType}-scans`] });
       queryClient.invalidateQueries({ queryKey: ["/api/findings"] });
 
-      let step = 0;
-      const steps = [15, 40, 70, 100];
-      const labels = ["Applying preferences…", "Staging artifacts…", "Uploading…", "Finalizing…"];
-      const interval = setInterval(() => {
-        if (step < steps.length) {
-          setUploadProgress(steps[step]);
-          setUploadStatus(labels[step] ?? "");
-          step += 1;
-        } else {
-          clearInterval(interval);
-          toast({
-            title: runTests ? "Upload & Testing Initiated" : "Upload Initiated",
-            description: runTests
-              ? `Your ${withFixes ? "scanned and fixed" : "scanned"} app is being uploaded to ${destination} and comprehensive tests will run automatically.`
-              : `Your ${withFixes ? "scanned and fixed" : "scanned"} app is being uploaded to ${destination}. Check the scan details for progress.`,
-            duration: 5000,
-          });
-          onOpenChange(false);
-          resetForm();
-        }
-      }, 180);
+      const outcome = await pollScanUploadProgress(
+        appType,
+        currentScanId,
+        (pct, label) => {
+          setUploadProgress(pct);
+          setUploadStatus(label);
+        },
+        { timeoutMs: 25000, intervalMs: 400 },
+      );
+
+      if (outcome === "failed") {
+        toast({
+          title: "Upload failed",
+          description: "Check the scan details for more information.",
+          variant: "destructive",
+        });
+        setScanStatus("completed");
+        return;
+      }
+      if (outcome === "timeout") {
+        toast({
+          title: "Upload still processing",
+          description: "Open the scan detail page to see live upload status.",
+        });
+      } else {
+        toast({
+          title: runTests ? "Upload and tests complete" : "Upload complete",
+          description: `Destination: ${destination}`,
+        });
+      }
+      onOpenChange(false);
+      resetForm();
     } catch (error) {
       console.error("Error uploading scan:", error);
       setScanStatus("completed");
@@ -481,7 +623,7 @@ export function NewAppWorkflowDialog({ open, onOpenChange, defaultAppType, hideT
     setMvpWebDeployUrl("");
     setMvpTechStack("");
     setMvpCloudInfra("");
-    setMvpSecurityModules(["SAST", "SCA", "Secrets"]);
+    setMvpSecurityModules(["SAST", "SCA", "IaC", "Secrets"]);
     setMobileSecurityModules(["SAST", "SCA", "Secrets"]);
     setWorkflowAdvancedOpen(false);
     setMobileAppName("");
@@ -495,6 +637,10 @@ export function NewAppWorkflowDialog({ open, onOpenChange, defaultAppType, hideT
     setWebCloudHosting("");
     setWebAuthRequired(false);
     setWebSecurityModules(["SAST", "DAST"]);
+    setContainerImageName("");
+    setContainerImageTag("latest");
+    setContainerRegistry("docker-hub");
+    setContainerRegistryUrl("");
     setScanResults({ total: 0, critical: 0, high: 0, medium: 0, low: 0 });
     setIssues([]);
     setShowDetails(false);
@@ -534,20 +680,24 @@ export function NewAppWorkflowDialog({ open, onOpenChange, defaultAppType, hideT
         </DialogHeader>
 
         <div className="space-y-6">
-          <Tabs value={appType} onValueChange={(v) => setAppType(v as any)}>
+          <Tabs value={appType} onValueChange={(v) => setAppType(v as WorkflowAppType)}>
             {!hideTabs && (
-              <TabsList className="grid w-full grid-cols-3">
-                <TabsTrigger value="mvp" data-testid="tab-mvp" disabled={scanStatus !== "idle"}>
-                  <Code className="w-4 h-4 mr-2" />
+              <TabsList className="grid w-full grid-cols-2 md:grid-cols-4 h-auto gap-1 p-1">
+                <TabsTrigger value="mvp" className="text-xs sm:text-sm" data-testid="tab-mvp" disabled={scanStatus !== "idle"}>
+                  <Code className="w-4 h-4 mr-1 sm:mr-2 shrink-0" />
                   MVP Code
                 </TabsTrigger>
-                <TabsTrigger value="mobile" data-testid="tab-mobile" disabled={scanStatus !== "idle"}>
-                  <Smartphone className="w-4 h-4 mr-2" />
+                <TabsTrigger value="mobile" className="text-xs sm:text-sm" data-testid="tab-mobile" disabled={scanStatus !== "idle"}>
+                  <Smartphone className="w-4 h-4 mr-1 sm:mr-2 shrink-0" />
                   Mobile App
                 </TabsTrigger>
-                <TabsTrigger value="web" data-testid="tab-web" disabled={scanStatus !== "idle"}>
-                  <Globe className="w-4 h-4 mr-2" />
+                <TabsTrigger value="web" className="text-xs sm:text-sm" data-testid="tab-web" disabled={scanStatus !== "idle"}>
+                  <Globe className="w-4 h-4 mr-1 sm:mr-2 shrink-0" />
                   Web App
+                </TabsTrigger>
+                <TabsTrigger value="container" className="text-xs sm:text-sm" data-testid="tab-container" disabled={scanStatus !== "idle"}>
+                  <Database className="w-4 h-4 mr-1 sm:mr-2 shrink-0" />
+                  Container
                 </TabsTrigger>
               </TabsList>
             )}
@@ -564,7 +714,7 @@ export function NewAppWorkflowDialog({ open, onOpenChange, defaultAppType, hideT
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div className="space-y-2">
-                  <div className="flex items-center gap-1"><Label htmlFor="project-name">Project Name *</Label><InfoTooltip content="A descriptive name for your project to help identify it across scans and reports." testId="info-project-name" /></div>
+                  <div className="flex items-center gap-1"><Label htmlFor="project-name">Project Name *</Label><InfoTooltip size="wide" content="This label is only used inside this app: it appears in your scan history, lists, and reports so you can find this scan later. It does not need to match your repository URL or folder name. The repository URL and branch below define what we scan." testId="info-project-name" /></div>
                   <Input
                     id="project-name"
                     placeholder="e.g., My Awesome MVP"
@@ -602,6 +752,13 @@ export function NewAppWorkflowDialog({ open, onOpenChange, defaultAppType, hideT
                     disabled={scanStatus !== "idle"}
                     data-testid="input-repository-url"
                   />
+                  {appConfig?.demoStrictScanTargets && appType === "mvp" && (
+                    <p className="text-xs text-amber-800 dark:text-amber-200/90 rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-1.5">
+                      <strong>Demo hint:</strong> for disposable testing, consider e.g.{" "}
+                      <code className="text-[11px]">https://github.com/octocat/Hello-World</code> or{" "}
+                      <code className="text-[11px]">https://example.com/repo</code> — any value is accepted.
+                    </p>
+                  )}
                 </div>
                 
                 <div className="space-y-2">
@@ -652,7 +809,7 @@ export function NewAppWorkflowDialog({ open, onOpenChange, defaultAppType, hideT
                   <div className="space-y-2">
                     <Label className="text-sm">Security modules (optional)</Label>
                     <div className="flex flex-wrap gap-4">
-                      {["SAST", "SCA", "Secrets"].map((m) => (
+                      {["SAST", "DAST", "SCA", "IaC", "Secrets"].map((m) => (
                         <label key={m} className="flex items-center gap-2 text-sm">
                           <Checkbox
                             checked={mvpSecurityModules.includes(m)}
@@ -666,60 +823,12 @@ export function NewAppWorkflowDialog({ open, onOpenChange, defaultAppType, hideT
                         </label>
                       ))}
                     </div>
-                    <p className="text-xs text-muted-foreground">Defaults apply if none selected. Stored with the scan record.</p>
+                    <p className="text-xs text-muted-foreground">
+                      DAST applies to deployed URLs (web workflow), not the repo clone. IaC scans Terraform, Dockerfiles, Kubernetes/Helm YAML, and compose files. Stored on the scan and used by the scanner.
+                    </p>
                   </div>
                 </CollapsibleContent>
               </Collapsible>
-
-              <div className="border-t pt-4">
-                <div className="flex items-center gap-1 mb-3"><h3 className="font-semibold">Deployment destination (optional)</h3><InfoTooltip content="You can scan without setting a deploy target. Choose where you plan to ship after fixes." testId="info-mvp-deployment-destination" /></div>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div className="space-y-2 md:col-span-2">
-                    <div className="flex items-center gap-1"><Label htmlFor="mvp-deploy-kind">Target</Label><InfoTooltip content="Scan only runs the security scan. App stores or Web require details only if you plan to upload there." testId="info-mvp-deploy-kind" /></div>
-                    <Select value={mvpDeployKind} onValueChange={(v) => setMvpDeployKind(v as any)} disabled={scanStatus !== "idle"}>
-                      <SelectTrigger id="mvp-deploy-kind" data-testid="select-mvp-deploy-kind">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="none">Scan only (no deploy target yet)</SelectItem>
-                        <SelectItem value="ios">iOS App Store</SelectItem>
-                        <SelectItem value="android">Android Play Store</SelectItem>
-                        <SelectItem value="web">Web URL</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-
-                  {(mvpDeployKind === "ios" || mvpDeployKind === "android") && (
-                    <div className="space-y-2 md:col-span-2">
-                      <div className="flex items-center gap-1"><Label htmlFor="mvp-bundle-id">
-                        {mvpDeployKind === "ios" ? "Bundle ID" : "Package Name"}
-                      </Label><InfoTooltip content="Required for the selected store target." testId="info-mvp-bundle-id" /></div>
-                      <Input
-                        id="mvp-bundle-id"
-                        placeholder="e.g., com.company.app"
-                        value={mvpBundleId}
-                        onChange={(e) => setMvpBundleId(e.target.value)}
-                        disabled={scanStatus !== "idle"}
-                        data-testid="input-mvp-bundle-id"
-                      />
-                    </div>
-                  )}
-
-                  {mvpDeployKind === "web" && (
-                    <div className="space-y-2 md:col-span-2">
-                      <div className="flex items-center gap-1"><Label htmlFor="mvp-web-deploy">Web deployment URL</Label><InfoTooltip content="Where the fixed web app will be deployed (e.g. staging or production URL)." testId="info-mvp-web-deploy" /></div>
-                      <Input
-                        id="mvp-web-deploy"
-                        placeholder="https://app.example.com"
-                        value={mvpWebDeployUrl}
-                        onChange={(e) => setMvpWebDeployUrl(e.target.value)}
-                        disabled={scanStatus !== "idle"}
-                        data-testid="input-mvp-web-deploy"
-                      />
-                    </div>
-                  )}
-                </div>
-              </div>
             </TabsContent>
 
             <TabsContent value="mobile" className="space-y-4 mt-4">
@@ -734,7 +843,7 @@ export function NewAppWorkflowDialog({ open, onOpenChange, defaultAppType, hideT
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div className="space-y-2">
-                  <div className="flex items-center gap-1"><Label htmlFor="mobile-app-name">App Name *</Label><InfoTooltip content="The display name of your mobile application." testId="info-mobile-app-name" /></div>
+                  <div className="flex items-center gap-1"><Label htmlFor="mobile-app-name">App Name *</Label><InfoTooltip size="wide" content="This label is only used inside this app: it appears in your scan history, lists, and notifications so you can find this scan later. It does not need to match your App Store or Play Store listing title, or your bundle or package ID. Those are entered separately below." testId="info-mobile-app-name" /></div>
                   <Input
                     id="mobile-app-name"
                     placeholder="e.g., MyApp"
@@ -795,7 +904,7 @@ export function NewAppWorkflowDialog({ open, onOpenChange, defaultAppType, hideT
                   </div>
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div className="space-y-2">
-                      <div className="flex items-center gap-1"><Label htmlFor="mobile-repo-url">Repository URL (optional)</Label><InfoTooltip content="Stored with the scan for your records." testId="info-mobile-repo-url" /></div>
+                      <div className="flex items-center gap-1"><Label htmlFor="mobile-repo-url">Repository URL (optional)</Label><InfoTooltip content="Reporting only — stored on the scan; does not change scan targets." testId="info-mobile-repo-url" /></div>
                       <Input
                         id="mobile-repo-url"
                         placeholder="e.g., https://github.com/username/mobile-app"
@@ -894,7 +1003,7 @@ export function NewAppWorkflowDialog({ open, onOpenChange, defaultAppType, hideT
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div className="space-y-2">
-                  <div className="flex items-center gap-1"><Label htmlFor="web-app-name">App Name *</Label><InfoTooltip content="The display name of your web application." testId="info-web-app-name" /></div>
+                  <div className="flex items-center gap-1"><Label htmlFor="web-app-name">App Name *</Label><InfoTooltip size="wide" content="This label is only used inside this app: it appears in your scan history, lists, and reports so you can find this scan later. It does not need to match your site’s public name or domain. The live URL below is what we scan." testId="info-web-app-name" /></div>
                   <Input
                     id="web-app-name"
                     placeholder="e.g., My Web App"
@@ -917,31 +1026,18 @@ export function NewAppWorkflowDialog({ open, onOpenChange, defaultAppType, hideT
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <div className="flex items-center gap-1"><Label htmlFor="web-scan-depth">Scan Depth *</Label><InfoTooltip content="Controls how thorough the security scan will be. Shallow is fastest, Deep is most comprehensive." testId="info-web-scan-depth" /></div>
-                  <Select value={webScanDepth} onValueChange={(v) => setWebScanDepth(v as any)} disabled={scanStatus !== "idle"}>
-                    <SelectTrigger id="web-scan-depth" data-testid="select-web-scan-depth">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="shallow">Shallow - Quick scan of critical areas</SelectItem>
-                      <SelectItem value="moderate">Moderate - Standard comprehensive scan</SelectItem>
-                      <SelectItem value="deep">Deep - Exhaustive security testing</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="space-y-2">
-                  <div className="flex items-center gap-1"><Label htmlFor="web-cloud-hosting">Cloud hosting (optional)</Label><InfoTooltip content="Optional. The hosting platform where your web app runs." testId="info-web-cloud-hosting" /></div>
-                  <Input
-                    id="web-cloud-hosting"
-                    placeholder="e.g., Vercel, AWS, Azure, Google Cloud"
-                    value={webCloudHosting}
-                    onChange={(e) => setWebCloudHosting(e.target.value)}
-                    disabled={scanStatus !== "idle"}
-                    data-testid="input-web-cloud-hosting"
-                  />
-                </div>
+              <div className="space-y-2 max-w-md">
+                <div className="flex items-center gap-1"><Label htmlFor="web-scan-depth">Scan Depth *</Label><InfoTooltip content="Controls how thorough the security scan will be. Shallow is fastest, Deep is most comprehensive." testId="info-web-scan-depth" /></div>
+                <Select value={webScanDepth} onValueChange={(v) => setWebScanDepth(v as any)} disabled={scanStatus !== "idle"}>
+                  <SelectTrigger id="web-scan-depth" data-testid="select-web-scan-depth">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="shallow">Shallow - Quick scan of critical areas</SelectItem>
+                    <SelectItem value="moderate">Moderate - Standard comprehensive scan</SelectItem>
+                    <SelectItem value="deep">Deep - Exhaustive security testing</SelectItem>
+                  </SelectContent>
+                </Select>
               </div>
 
               <Collapsible open={workflowAdvancedOpen} onOpenChange={setWorkflowAdvancedOpen}>
@@ -988,6 +1084,17 @@ export function NewAppWorkflowDialog({ open, onOpenChange, defaultAppType, hideT
                       onChange={(e) => setRepositoryUrl(e.target.value)}
                       disabled={scanStatus !== "idle"}
                       data-testid="input-web-repository-url"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <div className="flex items-center gap-1"><Label htmlFor="web-cloud-hosting">Cloud / infrastructure (optional)</Label><InfoTooltip content="Optional. Where the app is hosted; stored for reporting only." testId="info-web-cloud-hosting" /></div>
+                    <Input
+                      id="web-cloud-hosting"
+                      placeholder="e.g., Vercel, AWS, Azure, Google Cloud"
+                      value={webCloudHosting}
+                      onChange={(e) => setWebCloudHosting(e.target.value)}
+                      disabled={scanStatus !== "idle"}
+                      data-testid="input-web-cloud-hosting"
                     />
                   </div>
                 </CollapsibleContent>
@@ -1207,6 +1314,71 @@ export function NewAppWorkflowDialog({ open, onOpenChange, defaultAppType, hideT
                 </div>
               </div>
             </TabsContent>
+
+            <TabsContent value="container" className="space-y-4 mt-4">
+              <Card className="p-4 bg-slate-500/10 border-slate-500/20">
+                <div className="flex items-start gap-2">
+                  <Database className="w-4 h-4 text-slate-600 dark:text-slate-400 mt-0.5" />
+                  <p className="text-sm text-muted-foreground">
+                    Analyze a public image manifest and layers (Docker Hub or anonymous OCI v2). This is not a full CVE image scan.
+                  </p>
+                </div>
+              </Card>
+              <div className="space-y-2">
+                <Label htmlFor="workflow-container-image">Image repository *</Label>
+                <Input
+                  id="workflow-container-image"
+                  placeholder="e.g. nginx or bitnami/redis"
+                  value={containerImageName}
+                  onChange={(e) => setContainerImageName(e.target.value)}
+                  disabled={scanStatus !== "idle"}
+                  data-testid="input-workflow-container-image"
+                />
+                <p className="text-xs text-muted-foreground">
+                  Docker Hub: short names map to library/* (e.g. nginx → library/nginx).
+                </p>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="workflow-container-tag">Tag</Label>
+                <Input
+                  id="workflow-container-tag"
+                  placeholder="latest"
+                  value={containerImageTag}
+                  onChange={(e) => setContainerImageTag(e.target.value)}
+                  disabled={scanStatus !== "idle"}
+                  data-testid="input-workflow-container-tag"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>Registry</Label>
+                <Select value={containerRegistry} onValueChange={setContainerRegistry} disabled={scanStatus !== "idle"}>
+                  <SelectTrigger data-testid="select-workflow-container-registry">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="docker-hub">Docker Hub</SelectItem>
+                    <SelectItem value="custom">Custom (public OCI v2 URL)</SelectItem>
+                    <SelectItem value="gcr">Google GCR (manifest pull not enabled)</SelectItem>
+                    <SelectItem value="ecr">AWS ECR (manifest pull not enabled)</SelectItem>
+                    <SelectItem value="acr">Azure ACR (manifest pull not enabled)</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              {containerRegistry === "custom" && (
+                <div className="space-y-2">
+                  <Label htmlFor="workflow-container-registry-url">Registry base URL *</Label>
+                  <Input
+                    id="workflow-container-registry-url"
+                    placeholder="https://registry.example.io"
+                    value={containerRegistryUrl}
+                    onChange={(e) => setContainerRegistryUrl(e.target.value)}
+                    disabled={scanStatus !== "idle"}
+                    data-testid="input-workflow-container-registry-url"
+                  />
+                </div>
+              )}
+            </TabsContent>
+
           </Tabs>
 
           {/* Scan Button */}
@@ -1229,15 +1401,30 @@ export function NewAppWorkflowDialog({ open, onOpenChange, defaultAppType, hideT
                 <Loader2 className="w-5 h-5 text-blue-500 animate-spin mt-0.5" />
                 <div className="flex-1">
                   <h3 className="font-semibold text-blue-700 dark:text-blue-400">Scanning in Progress</h3>
-                  <p className="text-sm text-muted-foreground mt-1">
-                    Analyzing your code for security vulnerabilities...
-                  </p>
-                  <div className="mt-3 space-y-1 text-sm text-muted-foreground">
-                    <p>✓ Retrieved code from repository</p>
-                    <p>• Running SAST analysis...</p>
-                    <p>• Checking dependencies...</p>
-                    <p>• Detecting secrets...</p>
-                  </div>
+                  {appType === "container" ? (
+                    <>
+                      <p className="text-sm text-muted-foreground mt-1">
+                        Fetching registry manifest and analyzing image layers...
+                      </p>
+                      <div className="mt-3 space-y-1 text-sm text-muted-foreground">
+                        <p>• Resolving image reference</p>
+                        <p>• Pulling manifest metadata</p>
+                        <p>• Evaluating layer policy</p>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <p className="text-sm text-muted-foreground mt-1">
+                        Analyzing your code for security vulnerabilities...
+                      </p>
+                      <div className="mt-3 space-y-1 text-sm text-muted-foreground">
+                        <p>✓ Retrieved code from repository</p>
+                        <p>• Running SAST analysis...</p>
+                        <p>• Checking dependencies...</p>
+                        <p>• Detecting secrets...</p>
+                      </div>
+                    </>
+                  )}
                 </div>
               </div>
             </Card>
@@ -1398,21 +1585,90 @@ export function NewAppWorkflowDialog({ open, onOpenChange, defaultAppType, hideT
                 </Card>
               )}
 
-              {/* Upload Options */}
-              <div className="flex justify-end items-center gap-2 pt-4 border-t">
+              {appType === "mvp" && (
+                <Card className="p-4 border-dashed bg-muted/20">
+                  <h3 className="font-semibold mb-1">Deployment destination (optional)</h3>
+                  <p className="text-sm text-muted-foreground mb-4">
+                    Set before upload so we record the correct App Store, Play Store, or web URL. Scan-only is fine if you are not deploying yet.
+                  </p>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="space-y-2 md:col-span-2">
+                      <div className="flex items-center gap-1">
+                        <Label htmlFor="post-mvp-deploy-kind">Target</Label>
+                        <InfoTooltip content="Choose where the fixed build should be published." testId="info-post-mvp-deploy-kind" />
+                      </div>
+                      <Select value={mvpDeployKind} onValueChange={(v) => setMvpDeployKind(v as "none" | "ios" | "android" | "web")}>
+                        <SelectTrigger id="post-mvp-deploy-kind" data-testid="select-post-mvp-deploy-kind">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="none">Scan only (no deploy target yet)</SelectItem>
+                          <SelectItem value="ios">iOS App Store</SelectItem>
+                          <SelectItem value="android">Android Play Store</SelectItem>
+                          <SelectItem value="web">Web URL</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    {(mvpDeployKind === "ios" || mvpDeployKind === "android") && (
+                      <div className="space-y-2 md:col-span-2">
+                        <Label htmlFor="post-mvp-bundle-id">
+                          {mvpDeployKind === "ios" ? "Bundle ID" : "Package Name"}
+                        </Label>
+                        <Input
+                          id="post-mvp-bundle-id"
+                          placeholder="e.g., com.company.app"
+                          value={mvpBundleId}
+                          onChange={(e) => setMvpBundleId(e.target.value)}
+                          data-testid="input-post-mvp-bundle-id"
+                        />
+                      </div>
+                    )}
+                    {mvpDeployKind === "web" && (
+                      <div className="space-y-2 md:col-span-2">
+                        <Label htmlFor="post-mvp-web-deploy">Web deployment URL</Label>
+                        <Input
+                          id="post-mvp-web-deploy"
+                          placeholder="https://app.example.com"
+                          value={mvpWebDeployUrl}
+                          onChange={(e) => setMvpWebDeployUrl(e.target.value)}
+                          data-testid="input-post-mvp-web-deploy"
+                        />
+                      </div>
+                    )}
+                  </div>
+                </Card>
+              )}
+
+              {/* Upload options — not applicable for container scans */}
+              <div className="flex flex-wrap justify-end items-center gap-2 pt-4 border-t">
                 <Button variant="outline" onClick={handleClose} data-testid="button-close">
-                  Cancel
+                  {appType === "container" ? "Close" : "Cancel"}
                 </Button>
-                <InfoTooltip content="Deploys your app as-is without applying any security fixes. Not recommended if critical issues were found." testId="info-upload-without-fixes" />
-                <Button variant="outline" onClick={() => setShowUploadWithoutFixesWarning(true)} data-testid="button-upload-without-fixes">
-                  <Upload className="w-4 h-4 mr-2" />
-                  Upload without Fixes
-                </Button>
-                <InfoTooltip content="Applies AI-powered security fixes before deploying. Recommended for a more secure release." testId="info-upload-with-fixes" />
-                <Button onClick={() => setShowPostFixValidation(true)} data-testid="button-upload-with-fixes">
-                  <CheckCircle className="w-4 h-4 mr-2" />
-                  Upload with Fixes
-                </Button>
+                {appType === "container" && currentScanId && (
+                  <Button
+                    onClick={() => {
+                      setLocation(`/scan-details/container/${currentScanId}`);
+                      handleClose();
+                    }}
+                    data-testid="button-container-view-details"
+                  >
+                    Open scan details
+                  </Button>
+                )}
+                {appType !== "container" && (
+                  <>
+                    <InfoTooltip content="Deploys your app as-is without applying any security fixes. Not recommended if critical issues were found." testId="info-upload-without-fixes" />
+                    <Button variant="outline" onClick={() => setShowUploadWithoutFixesWarning(true)} data-testid="button-upload-without-fixes">
+                      <Upload className="w-4 h-4 mr-2" />
+                      Upload without Fixes
+                    </Button>
+                    <InfoTooltip content="Applies AI-powered security fixes before deploying. Recommended for a more secure release." testId="info-upload-with-fixes" />
+                    <Button onClick={() => setShowPostFixValidation(true)} data-testid="button-upload-with-fixes">
+                      <CheckCircle className="w-4 h-4 mr-2" />
+                      Upload with Fixes
+                    </Button>
+                  </>
+                )}
               </div>
             </div>
           )}
@@ -1420,7 +1676,7 @@ export function NewAppWorkflowDialog({ open, onOpenChange, defaultAppType, hideT
       </DialogContent>
       
       {/* Upload Warning Dialogs */}
-      {currentScanId && (
+      {currentScanId && appType !== "container" && (
         <>
           <UploadWithoutFixesWarningDialog
             open={showUploadWithoutFixesWarning}

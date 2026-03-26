@@ -4,13 +4,14 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Search, Code, Smartphone, Globe, Shield, Clock, CheckCircle2, AlertCircle } from "lucide-react";
-import type { MvpCodeScan, MobileAppScan, WebAppScan } from "@shared/schema";
+import { Search, Code, Smartphone, Globe, Shield, Clock, CheckCircle2, AlertCircle, Database } from "lucide-react";
+import type { MvpCodeScan, MobileAppScan, WebAppScan, ContainerScan } from "@shared/schema";
 import { useLocation } from "wouter";
+import { NewScanDialog } from "@/components/NewScanDialog";
 
 type AllScan = {
   id: string;
-  type: "mvp" | "mobile" | "web";
+  type: "mvp" | "mobile" | "web" | "container";
   name: string;
   platform?: string;
   status: string;
@@ -24,7 +25,7 @@ type AllScan = {
 export default function AllScans() {
   const [, setLocation] = useLocation();
   const [searchQuery, setSearchQuery] = useState("");
-  const [filterType, setFilterType] = useState<"all" | "mvp" | "mobile" | "web">("all");
+  const [filterType, setFilterType] = useState<"all" | "mvp" | "mobile" | "web" | "container">("all");
   const [filterStatus, setFilterStatus] = useState<"all" | "completed" | "scanning" | "pending">("all");
 
   const { data: mvpScans = [] } = useQuery<MvpCodeScan[]>({
@@ -39,6 +40,11 @@ export default function AllScans() {
 
   const { data: webScans = [] } = useQuery<WebAppScan[]>({
     queryKey: ["/api/web-scans"],
+    refetchInterval: 3000,
+  });
+
+  const { data: containerScans = [] } = useQuery<ContainerScan[]>({
+    queryKey: ["/api/container-scans"],
     refetchInterval: 3000,
   });
 
@@ -79,6 +85,18 @@ export default function AllScans() {
       createdAt: scan.createdAt,
       scannedAt: scan.scannedAt,
     })),
+    ...containerScans.map((scan) => ({
+      id: scan.id,
+      type: "container" as const,
+      name: scan.imageName,
+      platform: [scan.imageTag, scan.registry].filter(Boolean).join(" · ") || undefined,
+      status: scan.scanStatus,
+      findingsCount: scan.findingsCount,
+      criticalCount: scan.criticalCount,
+      highCount: scan.highCount,
+      createdAt: scan.createdAt,
+      scannedAt: scan.scannedAt ?? null,
+    })),
   ].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
   const filteredScans = allScans.filter((scan) => {
@@ -97,6 +115,8 @@ export default function AllScans() {
         return <Smartphone className="h-4 w-4" />;
       case "web":
         return <Globe className="h-4 w-4" />;
+      case "container":
+        return <Database className="h-4 w-4" />;
       default:
         return <Shield className="h-4 w-4" />;
     }
@@ -110,6 +130,8 @@ export default function AllScans() {
         return "Mobile App";
       case "web":
         return "Web App";
+      case "container":
+        return "Container";
       default:
         return type;
     }
@@ -151,17 +173,7 @@ export default function AllScans() {
   };
 
   const navigateToScan = (scan: AllScan) => {
-    switch (scan.type) {
-      case "mvp":
-        setLocation("/mvp-code-scan");
-        break;
-      case "mobile":
-        setLocation("/mobile-app-scan");
-        break;
-      case "web":
-        setLocation("/web-app-scan");
-        break;
-    }
+    setLocation(`/scan-details/${scan.type}/${scan.id}`);
   };
 
   const getStatusCount = (status: string) => {
@@ -170,11 +182,14 @@ export default function AllScans() {
 
   return (
     <div className="space-y-4 md:space-y-6">
-      <div>
-        <h1 className="text-2xl md:text-3xl font-bold" data-testid="heading-all-scans">All Scans</h1>
-        <p className="text-muted-foreground mt-1 md:mt-2 text-sm md:text-base" data-testid="text-all-scans-description">
-          View and manage all your security scans in one place
-        </p>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <h1 className="text-2xl md:text-3xl font-bold" data-testid="heading-all-scans">All Scans</h1>
+          <p className="text-muted-foreground mt-1 md:mt-2 text-sm md:text-base" data-testid="text-all-scans-description">
+            View and manage all your security scans in one place
+          </p>
+        </div>
+        <NewScanDialog />
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4">
@@ -258,18 +273,21 @@ export default function AllScans() {
         </CardHeader>
         <CardContent>
           <Tabs value={filterType} onValueChange={(v) => setFilterType(v as any)} data-testid="tabs-scan-type">
-            <TabsList className="grid w-full grid-cols-4">
-              <TabsTrigger value="all" data-testid="tab-all">
+            <TabsList className="grid w-full grid-cols-2 sm:grid-cols-3 md:grid-cols-5 h-auto gap-1 p-1">
+              <TabsTrigger value="all" data-testid="tab-all" className="text-xs sm:text-sm">
                 All ({allScans.length})
               </TabsTrigger>
-              <TabsTrigger value="mvp" data-testid="tab-mvp">
+              <TabsTrigger value="mvp" data-testid="tab-mvp" className="text-xs sm:text-sm">
                 MVP ({mvpScans.length})
               </TabsTrigger>
-              <TabsTrigger value="mobile" data-testid="tab-mobile">
+              <TabsTrigger value="mobile" data-testid="tab-mobile" className="text-xs sm:text-sm">
                 Mobile ({mobileScans.length})
               </TabsTrigger>
-              <TabsTrigger value="web" data-testid="tab-web">
+              <TabsTrigger value="web" data-testid="tab-web" className="text-xs sm:text-sm">
                 Web ({webScans.length})
+              </TabsTrigger>
+              <TabsTrigger value="container" data-testid="tab-container" className="text-xs sm:text-sm">
+                Container ({containerScans.length})
               </TabsTrigger>
             </TabsList>
 
