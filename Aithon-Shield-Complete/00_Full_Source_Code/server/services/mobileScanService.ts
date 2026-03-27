@@ -27,7 +27,7 @@ import type {
 } from './types';
 import { detectSecretsInBinary } from './secretsDetector';
 import { validateWebAppUrl } from './scanValidation';
-import { isDemoMode } from "../demoMode";
+import { shouldUseMobileDeterministicScan } from "../demoMode";
 import { demoScanVulnerabilities } from "../demoScanResults";
 
 /**
@@ -445,10 +445,10 @@ export async function scanMobileApp(
 ): Promise<ScanResult> {
   const startTime = Date.now();
 
-  if (isDemoMode()) {
+  if (shouldUseMobileDeterministicScan()) {
     if (progressCallback) {
-      await progressCallback(5, "Demo mode: skipping app download and binary analysis");
-      await progressCallback(100, "Demo mobile scan complete");
+      await progressCallback(5, "Simulated scan: generating deterministic results");
+      await progressCallback(100, "Mobile scan complete (simulated)");
     }
     return {
       vulnerabilities: demoScanVulnerabilities("mobile"),

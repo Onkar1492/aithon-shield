@@ -12,3 +12,4 @@ after_load.png
 after_recheck.png
 after_reload.png
 all_scans_search_*.png
+.env

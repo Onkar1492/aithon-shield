@@ -147,10 +147,108 @@ export function demoScanVulnerabilities(kind: "mvp" | "web" | "mobile"): Vulnera
   return [
     {
       ...base,
-      title: "Demo: Mobile scan completed (no package download)",
+      title: "Insecure Data Storage — Plaintext Credentials in SharedPreferences",
       description:
-        "Binary download and analysis are skipped in demo mode. Use a real store URL or bundle ID in production.",
-      location: "demo/mobile-scan",
+        "The application stores user credentials (username and password) in Android SharedPreferences without encryption. SharedPreferences data is stored as plaintext XML files accessible to rooted devices or backup extraction.",
+      severity: "CRITICAL" as const,
+      category: "Mobile Security",
+      cwe: "312",
+      location: "com.app.auth.LoginManager.saveCredentials()",
+      remediation:
+        "Use Android Keystore or EncryptedSharedPreferences (Jetpack Security) to store sensitive data. Never store passwords — use tokens with short TTLs instead.",
+      riskScore: 92,
+      exploitabilityScore: 88,
+      impactScore: 95,
+    },
+    {
+      ...base,
+      title: "Missing Certificate Pinning — TLS Interception Possible",
+      description:
+        "The application does not implement certificate pinning. An attacker on the same network can intercept HTTPS traffic using a proxy with a custom CA certificate installed on the device.",
+      severity: "HIGH" as const,
+      category: "Mobile Security",
+      cwe: "295",
+      location: "com.app.network.ApiClient",
+      remediation:
+        "Implement certificate pinning using OkHttp CertificatePinner or TrustManager. Pin against the leaf certificate or a specific intermediate CA.",
+      riskScore: 78,
+      exploitabilityScore: 72,
+      impactScore: 85,
+    },
+    {
+      ...base,
+      title: "Exported Activity Without Permission — Deep Link Hijacking",
+      description:
+        "AndroidManifest.xml declares an exported Activity (com.app.DeepLinkActivity) with an intent-filter but no custom permission. Any third-party app can invoke this Activity and potentially redirect the user or extract data.",
+      severity: "HIGH" as const,
+      category: "Mobile Security",
+      cwe: "926",
+      location: "AndroidManifest.xml — DeepLinkActivity",
+      remediation:
+        'Add android:permission with a signature-level custom permission, or set android:exported="false" if the Activity should not be externally accessible.',
+      riskScore: 72,
+      exploitabilityScore: 68,
+      impactScore: 76,
+    },
+    {
+      ...base,
+      title: "Hardcoded API Key in Binary",
+      description:
+        "A Google Maps API key was found embedded in the compiled binary. Hardcoded keys can be extracted through reverse engineering and abused for quota exhaustion or data access.",
+      severity: "MEDIUM" as const,
+      category: "Secrets",
+      cwe: "798",
+      location: "classes.dex — com.app.config.Keys",
+      remediation:
+        "Move API keys to a secure backend proxy or use Android's BuildConfig with CI injection. Restrict the key's scope in the Google Cloud Console.",
+      riskScore: 58,
+      exploitabilityScore: 65,
+      impactScore: 50,
+    },
+    {
+      ...base,
+      title: "Debug Mode Enabled in Release Build",
+      description:
+        'The AndroidManifest.xml has android:debuggable="true" which allows attaching a debugger to the running application, inspecting variables, and bypassing security controls.',
+      severity: "MEDIUM" as const,
+      category: "Mobile Security",
+      cwe: "215",
+      location: "AndroidManifest.xml — application tag",
+      remediation:
+        'Ensure android:debuggable is set to "false" or omitted in release builds. Use build variants to automatically strip debug flags.',
+      riskScore: 52,
+      exploitabilityScore: 60,
+      impactScore: 45,
+    },
+    {
+      ...base,
+      title: "Weak Cryptography — MD5 Hash Used for Token Verification",
+      description:
+        "The application uses MD5 to hash authentication tokens before comparison. MD5 is cryptographically broken and susceptible to collision attacks.",
+      severity: "MEDIUM" as const,
+      category: "Code Security",
+      cwe: "328",
+      location: "com.app.auth.TokenValidator.verify()",
+      remediation:
+        "Replace MD5 with SHA-256 or SHA-3. For password hashing, use bcrypt, scrypt, or Argon2.",
+      riskScore: 48,
+      exploitabilityScore: 42,
+      impactScore: 55,
+    },
+    {
+      ...base,
+      title: "WebView JavaScript Interface Injection Risk",
+      description:
+        "A WebView component uses addJavascriptInterface() which on Android API < 17 allows arbitrary code execution. Even on newer APIs, the exposed methods should be carefully reviewed.",
+      severity: "LOW" as const,
+      category: "Mobile Security",
+      cwe: "749",
+      location: "com.app.ui.WebViewFragment",
+      remediation:
+        "Set minSdkVersion >= 17 and annotate exposed methods with @JavascriptInterface. Validate all input from JavaScript to native bridges.",
+      riskScore: 32,
+      exploitabilityScore: 28,
+      impactScore: 38,
     },
   ];
 }

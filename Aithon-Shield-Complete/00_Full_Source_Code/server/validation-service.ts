@@ -33,15 +33,14 @@ export interface ValidationResult {
  * Validates entire application before re-upload, not just security fixes
  * Subscription tier enforcement:
  * - Free: Preview only (first 3 issues)
- * - Pro: Full validation results
- * - Enterprise: Unlimited + auto-fix suggestions
+ * - Starter / Pro: Full validation results
  */
 export async function validateCodeBeforeUpload(
   storage: IStorage,
   userId: string,
   scanId: string,
   scanType: 'mvp' | 'mobile' | 'web',
-  subscriptionTier: 'free' | 'pro' | 'enterprise' = 'free'
+  subscriptionTier: 'free' | 'starter' | 'pro' = 'free'
 ): Promise<ValidationResult> {
   
   // Get scan details

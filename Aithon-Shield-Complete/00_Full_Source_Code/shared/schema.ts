@@ -112,8 +112,37 @@ export const organizationMembers = pgTable(
   ],
 );
 
+export const organizationInvites = pgTable(
+  "organization_invites",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    organizationId: varchar("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    /** Lowercase email of the invitee */
+    email: text("email").notNull(),
+    /** owner | admin | developer | viewer | auditor — invites never use owner */
+    role: text("role").notNull().default("developer"),
+    /** Opaque token for /invite/:token */
+    token: text("token").notNull().unique(),
+    invitedByUserId: varchar("invited_by_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    createdAt: timestamp("created_at").notNull().default(sql`now()`),
+    expiresAt: timestamp("expires_at").notNull(),
+    acceptedAt: timestamp("accepted_at"),
+  },
+  (t) => [
+    index("org_invites_org_idx").on(t.organizationId),
+    uniqueIndex("org_invites_org_email_pending")
+      .on(t.organizationId, t.email)
+      .where(sql`${t.acceptedAt} is null`),
+  ],
+);
+
 export type Organization = typeof organizations.$inferSelect;
 export type OrganizationMember = typeof organizationMembers.$inferSelect;
+export type OrganizationInvite = typeof organizationInvites.$inferSelect;
 
 export const insertUserSchema = createInsertSchema(users).pick({
   email: true,
@@ -313,6 +342,7 @@ export const updateMobileAppScanSchema = z.object({
   fixesApplied: z.boolean().optional(),
   uploadPreference: z.string().optional(),
   autoUploadDestination: z.string().optional(),
+  workflowMetadata: z.record(z.unknown()).nullable().optional(),
   // Progress Tracking Fields (Feature 1)
   scanProgress: z.number().min(0).max(100).nullable().optional(),
   scanStage: z.string().nullable().optional(),
@@ -1528,3 +1558,52 @@ export const learningProgress = pgTable(
 );
 
 export type LearningProgress = typeof learningProgress.$inferSelect;
+
+/**
+ * P6-D5 — User feedback on likely false positives (fingerprint-keyed; complements ML in future).
+ */
+export const fpFeedback = pgTable(
+  "fp_feedback",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    userId: varchar("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    fingerprint: text("fingerprint").notNull(),
+    /** likely_fp | true_positive */
+    verdict: text("verdict").notNull(),
+    updatedAt: timestamp("updated_at").notNull().default(sql`now()`),
+  },
+  (t) => [
+    uniqueIndex("fp_feedback_user_fp_unique").on(t.userId, t.fingerprint),
+    index("fp_feedback_user_idx").on(t.userId),
+  ],
+);
+
+export type FpFeedback = typeof fpFeedback.$inferSelect;
+
+/**
+ * P6-I1 — Mobile runtime monitoring events (simulated device farm / future agent).
+ */
+export const mobileRuntimeEvents = pgTable(
+  "mobile_runtime_events",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    userId: varchar("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    mobileScanId: varchar("mobile_scan_id")
+      .notNull()
+      .references(() => mobileAppScans.id, { onDelete: "cascade" }),
+    platform: text("platform").notNull(),
+    eventType: text("event_type").notNull(),
+    severity: text("severity").notNull(),
+    message: text("message").notNull(),
+    payload: jsonb("payload").$type<Record<string, unknown> | null>(),
+    createdAt: timestamp("created_at").notNull().default(sql`now()`),
+  },
+  (t) => [index("mre_scan_idx").on(t.mobileScanId), index("mre_user_idx").on(t.userId)],
+);
+
+export type MobileRuntimeEvent = typeof mobileRuntimeEvents.$inferSelect;
+

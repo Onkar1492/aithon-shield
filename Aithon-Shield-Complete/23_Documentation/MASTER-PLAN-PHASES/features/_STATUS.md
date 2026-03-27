@@ -40,10 +40,10 @@ Update this file after each feature. **Do not mark “user verified” until the
 | P5-H4 | implemented — pending user verification | 1 | [P5-H4-LEARNING-CENTER.md](./P5-H4-LEARNING-CENTER.md) |
 | P6-C6 | implemented — pending user verification | 2 | [P6-C6-SUPPLY-CHAIN-TYPOSQUATTING.md](./P6-C6-SUPPLY-CHAIN-TYPOSQUATTING.md) |
 | P6-C8 | implemented — pending user verification | 2 | [P6-C8-PROOF-BASED-DAST.md](./P6-C8-PROOF-BASED-DAST.md) |
-| P6-C9 | not started | 2 | — |
-| P6-D5 | not started | 2 | — |
-| P6-I1 | not started | Both | — |
-| P6-I2 | not started | Both | — |
-| P6-I3 | not started | 2 | — |
+| P6-C9 | implemented — pending user verification | 2 | [P6-C9-MOBILE-REAL-DEVICE-DAST.md](./P6-C9-MOBILE-REAL-DEVICE-DAST.md) |
+| P6-D5 | implemented — pending user verification | 2 | [P6-D5-FALSE-POSITIVE-SUPPRESSION.md](./P6-D5-FALSE-POSITIVE-SUPPRESSION.md) |
+| P6-I1 | implemented — pending user verification | Both | [P6-I1-MOBILE-RUNTIME-MONITORING.md](./P6-I1-MOBILE-RUNTIME-MONITORING.md) |
+| P6-I2 | implemented — pending user verification | **deferred to MVP2** — code + arch saved in `MVP2/P6-I2-WHITE-LABEL-BRANDING-DEFERRED.md` | [P6-I2-WHITE-LABEL-BRANDING.md](./P6-I2-WHITE-LABEL-BRANDING.md) |
+| P6-I3 | implemented — pending user verification | 2 | [P6-I3-AIR-GAP-SELF-HOSTED.md](./P6-I3-AIR-GAP-SELF-HOSTED.md) |
 
 **Legend:** `not started` → `in progress` → `implemented — pending user verification` → `user verified`

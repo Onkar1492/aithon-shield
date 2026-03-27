@@ -12,6 +12,9 @@ export type WebhookEventType =
   | "sla.breached"
   | "risk.accepted"
   | "risk.revoked"
+  | "secrets_rotation.created"
+  | "secrets_rotation.rotated"
+  | "secrets_rotation.verified"
   | "test.ping";
 
 export interface WebhookPayload {

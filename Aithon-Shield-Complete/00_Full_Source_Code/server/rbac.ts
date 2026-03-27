@@ -17,3 +17,8 @@ export function organizationRoleWeight(role: string | undefined): number {
 export function organizationRoleCanWriteScans(role: string | undefined): boolean {
   return organizationRoleWeight(role) >= 60;
 }
+
+/** Invite teammates, revoke invites, remove members (owner + admin) */
+export function organizationRoleCanManageTeam(role: string | undefined): boolean {
+  return organizationRoleWeight(role) >= 80;
+}

@@ -20,12 +20,9 @@ import {
   FileText,
   Activity,
   Award,
-  GitBranch,
   Settings,
-  CheckCircle2,
   Zap,
   BookOpen,
-  ScrollText,
   Archive,
   Accessibility,
   Lock,
@@ -56,14 +53,11 @@ const coreItems = [
   { title: "Reports", icon: FileText, path: "/reports" },
   { title: "Security Health", icon: Activity, path: "/security-health" },
   { title: "Developer score cards", icon: Award, path: "/developer-score-cards" },
-  { title: "Attack path graph", icon: GitBranch, path: "/attack-path" },
   { title: "Scheduled Scans", icon: CalendarClock, path: "/scheduled-scans" },
   { title: "CVE Watchlist", icon: Radar, path: "/cve-watchlist" },
   { title: "SLA", icon: Timer, path: "/sla" },
   { title: "Risk exceptions", icon: Scale, path: "/risk-exceptions" },
   { title: "Secrets Rotation", icon: KeyRound, path: "/secrets-rotation" },
-  /** Keep with SLA / risk so governance is visible without scrolling past Core. */
-  { title: "Compliance", icon: CheckCircle2, path: "/compliance" },
 ];
 
 const additionalServicesItems = [
@@ -75,7 +69,6 @@ const analysisItems = [{ title: "Attack Simulator", icon: Zap, path: "/attack-si
 const resourceItems = [
   { title: "Plans & Pricing", icon: CreditCard, path: "/plans" },
   { title: "Learning Hub", icon: BookOpen, path: "/learn" },
-  { title: "Audit Log", icon: ScrollText, path: "/audit-log" },
 ];
 
 export function AppSidebar() {
@@ -87,7 +80,7 @@ export function AppSidebar() {
         <div className="flex items-center gap-2">
           <img
             src={logoImage}
-            alt="Aithon Shield Logo"
+            alt=""
             className="h-8 w-8 object-contain"
           />
           <div>

@@ -78,7 +78,10 @@ import {
 } from "@/components/ui/tooltip";
 
 /** API responses include `fixConfidence`; DB row type does not. */
-type FindingRow = Finding & { fixConfidence?: FixConfidencePayload };
+type FindingRow = Finding & {
+  fixConfidence?: FixConfidencePayload;
+  fpSuppression?: { score: number; label: string; verdict?: string };
+};
 
 interface FindingsTableProps {
   findings: FindingRow[];
@@ -111,6 +114,20 @@ export function FindingsTable({ findings, isLoading }: FindingsTableProps) {
   });
 
   const tracker = trackerStatus ?? TRACKER_DISCONNECTED;
+
+  const fpFeedbackMutation = useMutation({
+    mutationFn: async (payload: { findingId: string; verdict: "likely_fp" | "true_positive" }) => {
+      const res = await apiRequest("POST", `/api/findings/${payload.findingId}/fp-feedback`, { verdict: payload.verdict });
+      return res.json() as Promise<{ ok: boolean }>;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/findings"] });
+      toast({ title: "Feedback saved", description: "False-positive signal updated for this fingerprint." });
+    },
+    onError: (e: any) => {
+      toast({ title: "Could not save", description: e?.message ?? "Try again", variant: "destructive" });
+    },
+  });
 
   const trackerIssueMutation = useMutation({
     mutationFn: async (payload: { findingId: string; provider: "jira" | "linear" }) => {
@@ -288,7 +305,16 @@ export function FindingsTable({ findings, isLoading }: FindingsTableProps) {
                       )}
                     </div>
                   </TableCell>
-                  <TableCell className="font-medium">{finding.title}</TableCell>
+                  <TableCell className="font-medium">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span>{finding.title}</span>
+                      {finding.fpSuppression?.label === "user_marks_likely_fp" && (
+                        <Badge variant="outline" className="text-[10px] border-amber-400 text-amber-800 dark:text-amber-200">
+                          Likely FP
+                        </Badge>
+                      )}
+                    </div>
+                  </TableCell>
                   <TableCell className="text-sm text-muted-foreground" data-testid={`scan-name-${finding.id}`}>
                     {(finding as any).scanName || "Unknown"}
                   </TableCell>
@@ -503,6 +529,25 @@ export function FindingsTable({ findings, isLoading }: FindingsTableProps) {
                               {!tracker.linear.connected && (
                                 <span className="ml-auto text-xs text-muted-foreground pl-2">Setup</span>
                               )}
+                            </DropdownMenuItem>
+                          </>
+                        )}
+                        {!isFindingResolved(finding) && !isRiskAccepted(finding) && (
+                          <>
+                            <DropdownMenuSeparator />
+                            <DropdownMenuItem
+                              onClick={() => fpFeedbackMutation.mutate({ findingId: finding.id, verdict: "likely_fp" })}
+                              disabled={fpFeedbackMutation.isPending}
+                            >
+                              <AlertTriangle className="w-4 h-4 mr-2" />
+                              Mark likely false positive
+                            </DropdownMenuItem>
+                            <DropdownMenuItem
+                              onClick={() => fpFeedbackMutation.mutate({ findingId: finding.id, verdict: "true_positive" })}
+                              disabled={fpFeedbackMutation.isPending}
+                            >
+                              <Sparkles className="w-4 h-4 mr-2" />
+                              Confirm true positive
                             </DropdownMenuItem>
                           </>
                         )}

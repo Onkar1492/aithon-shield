@@ -7,7 +7,6 @@ import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Switch } from "@/components/ui/switch";
 import { Separator } from "@/components/ui/separator";
-import SsoConfiguration from "@/components/SsoConfiguration";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -57,19 +56,6 @@ type ApiKeyListItem = {
   lastUsedAt: string | null;
 };
 
-type WebhookListItem = {
-  id: string;
-  name: string;
-  url: string;
-  format: string;
-  hasSecret: boolean;
-  eventFilter: string | null;
-  enabled: boolean;
-  lastDeliveredAt: string | null;
-  lastDeliveryStatus: string | null;
-  createdAt: string;
-};
-
 type GitConnectionRow = {
   id: string;
   provider: string;
@@ -94,7 +80,7 @@ import {
   unsubscribeFromPushNotifications,
   getNotificationPermission,
 } from "@/lib/pushNotifications";
-import { Loader2, FileCode2, CheckCircle2, XCircle, Plus, Trash2, Send, Pencil } from "lucide-react";
+import { Loader2, FileCode2, CheckCircle2, XCircle, Plus, Trash2 } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { AITHON_SHIELD_YML_EXAMPLE } from "@shared/aithonShieldConfig";
 
@@ -150,16 +136,6 @@ export default function Settings() {
   const [jiraIssueType, setJiraIssueType] = useState("Task");
   const [linearKey, setLinearKey] = useState("");
   const [linearTeam, setLinearTeam] = useState("");
-
-  // Webhook state
-  const [webhookDialogOpen, setWebhookDialogOpen] = useState(false);
-  const [editingWebhook, setEditingWebhook] = useState<WebhookListItem | null>(null);
-  const [whName, setWhName] = useState("");
-  const [whUrl, setWhUrl] = useState("");
-  const [whFormat, setWhFormat] = useState("json");
-  const [whSecret, setWhSecret] = useState("");
-  const [whEventFilter, setWhEventFilter] = useState("");
-  const [whEnabled, setWhEnabled] = useState(true);
 
   // Update notification permission when it changes
   useEffect(() => {
@@ -263,72 +239,6 @@ export default function Settings() {
     onError: (e: Error) => toast({ title: "Disconnect failed", description: e.message, variant: "destructive" }),
   });
 
-  // ── Webhook endpoints ──────────────────────────────────────
-
-  const { data: webhookEndpoints, isLoading: loadingWebhooks } = useQuery<WebhookListItem[]>({
-    queryKey: ["/api/webhook-endpoints"],
-  });
-
-  const saveWebhookMutation = useMutation({
-    mutationFn: async () => {
-      const payload: Record<string, unknown> = { name: whName, url: whUrl, format: whFormat, enabled: whEnabled };
-      if (whSecret) payload.secret = whSecret;
-      if (whEventFilter) payload.eventFilter = whEventFilter;
-      if (editingWebhook) {
-        return apiRequest("PATCH", `/api/webhook-endpoints/${editingWebhook.id}`, payload);
-      }
-      return apiRequest("POST", "/api/webhook-endpoints", payload);
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/webhook-endpoints"] });
-      toast({ title: editingWebhook ? "Webhook updated" : "Webhook created" });
-      closeWebhookDialog();
-    },
-    onError: (e: Error) => toast({ title: "Webhook save failed", description: e.message, variant: "destructive" }),
-  });
-
-  const deleteWebhookMutation = useMutation({
-    mutationFn: (id: string) => apiRequest("DELETE", `/api/webhook-endpoints/${id}`),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/webhook-endpoints"] });
-      toast({ title: "Webhook deleted" });
-    },
-    onError: (e: Error) => toast({ title: "Delete failed", description: e.message, variant: "destructive" }),
-  });
-
-  const testWebhookMutation = useMutation({
-    mutationFn: async (id: string) => {
-      const res = await apiRequest("POST", `/api/webhook-endpoints/${id}/test`);
-      return res.json() as Promise<{ ok: boolean; status: string }>;
-    },
-    onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ["/api/webhook-endpoints"] });
-      toast({ title: data.ok ? "Ping succeeded" : "Ping failed", description: data.status, variant: data.ok ? "default" : "destructive" });
-    },
-    onError: (e: Error) => toast({ title: "Test failed", description: e.message, variant: "destructive" }),
-  });
-
-  function openWebhookDialog(ep?: WebhookListItem) {
-    setEditingWebhook(ep ?? null);
-    setWhName(ep?.name ?? "");
-    setWhUrl(ep?.url ?? "");
-    setWhFormat(ep?.format ?? "json");
-    setWhSecret("");
-    setWhEventFilter(ep?.eventFilter ?? "");
-    setWhEnabled(ep?.enabled ?? true);
-    setWebhookDialogOpen(true);
-  }
-
-  function closeWebhookDialog() {
-    setWebhookDialogOpen(false);
-    setEditingWebhook(null);
-    setWhName("");
-    setWhUrl("");
-    setWhFormat("json");
-    setWhSecret("");
-    setWhEventFilter("");
-    setWhEnabled(true);
-  }
 
   const createApiKeyMutation = useMutation({
     mutationFn: async (payload: { name: string; scopes: ApiKeyScope[] }) => {
@@ -1442,29 +1352,6 @@ export default function Settings() {
       </Card>
 
       <Card className="p-6 shadow-sm">
-        <h2 className="text-xl font-semibold mb-4">General Settings</h2>
-        <div className="space-y-6">
-          <div className="space-y-2">
-            <Label htmlFor="org-name">Organization Name</Label>
-            <Input
-              id="org-name"
-              defaultValue="Acme Corporation"
-              data-testid="input-org-name"
-            />
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor="contact-email">Contact Email</Label>
-            <Input
-              id="contact-email"
-              type="email"
-              defaultValue="security@acme.com"
-              data-testid="input-contact-email"
-            />
-          </div>
-        </div>
-      </Card>
-
-      <Card className="p-6 shadow-sm">
         <h2 className="text-xl font-semibold mb-4">Subscription Tier</h2>
         <div className="space-y-4">
           <div className="flex items-center justify-between">
@@ -1800,115 +1687,6 @@ export default function Settings() {
           </DialogContent>
         </Dialog>
       </Card>
-
-      {/* ── Webhooks + SIEM ──────────────────────────────────── */}
-      <Card className="p-6 shadow-sm">
-        <div className="flex items-center justify-between mb-2">
-          <h2 className="text-xl font-semibold">Webhooks &amp; SIEM</h2>
-          <Button size="sm" onClick={() => openWebhookDialog()} data-testid="button-add-webhook">
-            <Plus className="w-4 h-4 mr-1" /> Add endpoint
-          </Button>
-        </div>
-        <p className="text-sm text-muted-foreground mb-4">
-          Receive real-time security events (scan.completed, finding.created, finding.resolved, sla.breached, risk.accepted, risk.revoked) via JSON, CEF, or syslog payloads.
-        </p>
-
-        {loadingWebhooks ? (
-          <div className="space-y-2">{[1, 2].map((i) => <Skeleton key={i} className="h-14 w-full" />)}</div>
-        ) : !webhookEndpoints?.length ? (
-          <p className="text-sm text-muted-foreground italic">No webhook endpoints configured.</p>
-        ) : (
-          <div className="space-y-3">
-            {webhookEndpoints.map((ep) => (
-              <div key={ep.id} className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 p-4 rounded-lg border border-border/60">
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className="font-medium truncate">{ep.name}</span>
-                    <Badge variant="outline" className="text-xs uppercase">{ep.format}</Badge>
-                    {ep.enabled ? (
-                      <Badge className="text-xs bg-green-500/15 text-green-500 border-green-500/40">Active</Badge>
-                    ) : (
-                      <Badge variant="secondary" className="text-xs">Disabled</Badge>
-                    )}
-                    {ep.hasSecret && <Badge variant="outline" className="text-xs">HMAC</Badge>}
-                  </div>
-                  <p className="text-xs text-muted-foreground truncate mt-0.5">{ep.url}</p>
-                  {ep.eventFilter && <p className="text-xs text-muted-foreground mt-0.5">Events: {ep.eventFilter}</p>}
-                  {ep.lastDeliveryStatus && (
-                    <p className="text-xs text-muted-foreground mt-0.5">
-                      Last delivery: {ep.lastDeliveryStatus}
-                      {ep.lastDeliveredAt && ` (${new Date(ep.lastDeliveredAt).toLocaleString()})`}
-                    </p>
-                  )}
-                </div>
-                <div className="flex gap-2 flex-shrink-0">
-                  <Button variant="outline" size="sm" onClick={() => testWebhookMutation.mutate(ep.id)} disabled={testWebhookMutation.isPending} data-testid={`button-test-webhook-${ep.id}`}>
-                    <Send className="w-3.5 h-3.5 mr-1" /> Ping
-                  </Button>
-                  <Button variant="outline" size="sm" onClick={() => openWebhookDialog(ep)} data-testid={`button-edit-webhook-${ep.id}`}>
-                    <Pencil className="w-3.5 h-3.5" />
-                  </Button>
-                  <Button variant="outline" size="sm" onClick={() => deleteWebhookMutation.mutate(ep.id)} disabled={deleteWebhookMutation.isPending} data-testid={`button-delete-webhook-${ep.id}`}>
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </Button>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-
-        <Dialog open={webhookDialogOpen} onOpenChange={(o) => !o && closeWebhookDialog()}>
-          <DialogContent className="max-w-md">
-            <DialogHeader>
-              <DialogTitle>{editingWebhook ? "Edit webhook endpoint" : "Add webhook endpoint"}</DialogTitle>
-              <DialogDescription>Events are delivered as HTTP POST with optional HMAC-SHA256 signature.</DialogDescription>
-            </DialogHeader>
-            <div className="space-y-3 py-2">
-              <div>
-                <Label>Name</Label>
-                <Input className="mt-1" placeholder="e.g. Splunk prod" value={whName} onChange={(e) => setWhName(e.target.value)} data-testid="input-webhook-name" />
-              </div>
-              <div>
-                <Label>URL (HTTPS)</Label>
-                <Input className="mt-1" placeholder="https://siem.example.com/webhook" value={whUrl} onChange={(e) => setWhUrl(e.target.value)} data-testid="input-webhook-url" />
-              </div>
-              <div>
-                <Label>Format</Label>
-                <Select value={whFormat} onValueChange={setWhFormat}>
-                  <SelectTrigger className="mt-1" data-testid="select-webhook-format">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="json">JSON</SelectItem>
-                    <SelectItem value="cef">CEF (ArcSight / Splunk)</SelectItem>
-                    <SelectItem value="syslog">Syslog (RFC 5424)</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div>
-                <Label>Signing secret (optional)</Label>
-                <Input className="mt-1" type="password" autoComplete="new-password" placeholder={editingWebhook?.hasSecret ? "(unchanged)" : "HMAC-SHA256 secret"} value={whSecret} onChange={(e) => setWhSecret(e.target.value)} data-testid="input-webhook-secret" />
-              </div>
-              <div>
-                <Label>Event filter (optional, comma-separated)</Label>
-                <Input className="mt-1" placeholder="scan.completed,finding.created — leave empty for all" value={whEventFilter} onChange={(e) => setWhEventFilter(e.target.value)} data-testid="input-webhook-event-filter" />
-              </div>
-              <div className="flex items-center gap-2">
-                <Switch checked={whEnabled} onCheckedChange={setWhEnabled} data-testid="switch-webhook-enabled" />
-                <Label>Enabled</Label>
-              </div>
-            </div>
-            <DialogFooter>
-              <Button variant="outline" onClick={closeWebhookDialog}>Cancel</Button>
-              <Button disabled={saveWebhookMutation.isPending || !whName || !whUrl} onClick={() => saveWebhookMutation.mutate()} data-testid="button-save-webhook">
-                {saveWebhookMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : editingWebhook ? "Update" : "Create"}
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
-      </Card>
-
-      <SsoConfiguration />
 
       <div className="flex justify-end">
         <Button data-testid="button-save-settings">Save Changes</Button>

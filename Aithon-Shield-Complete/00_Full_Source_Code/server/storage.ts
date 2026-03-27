@@ -1,7 +1,7 @@
-import { type User, type InsertUser, type Session, type InsertSession, type Finding, type InsertFinding, type MobileAppScan, type InsertMobileAppScan, type MvpCodeScan, type InsertMvpCodeScan, type WebAppScan, type InsertWebAppScan, type Report, type InsertReport, type PipelineScan, type InsertPipelineScan, type ContainerScan, type InsertContainerScan, type NetworkScan, type InsertNetworkScan, type LinterScan, type InsertLinterScan, type LinterFixBatch, type InsertLinterFixBatch, type PipelineFixBatch, type InsertPipelineFixBatch, type NetworkFixBatch, type InsertNetworkFixBatch, type ContainerFixBatch, type InsertContainerFixBatch, type ScheduledScan, type InsertScheduledScan, type AlertSettings, type InsertAlertSettings, type SsoProvider, type InsertSsoProvider, type TermsOfServiceAcceptance, type InsertTermsOfServiceAcceptance, type FixValidationSession, type InsertFixValidationSession, type AutomatedFixJob, type InsertAutomatedFixJob, type GlobalFixJob, type InsertGlobalFixJob, type GlobalFixScanTask, type InsertGlobalFixScanTask, type Notification, type InsertNotification, type ApiKey, type AuditEvent, type Organization, type OrganizationMember, type GitConnection, type TrackerConnection, type WebhookEndpoint, type WebhookDelivery, type RemediationJob, type ShieldAdvisorConversation, type CveWatchlistEntry, type RiskException, type SecretsRotationTicket, type LearningProgress } from "@shared/schema";
-import { randomUUID } from "crypto";
+import { type User, type InsertUser, type Session, type InsertSession, type Finding, type InsertFinding, type MobileAppScan, type InsertMobileAppScan, type MvpCodeScan, type InsertMvpCodeScan, type WebAppScan, type InsertWebAppScan, type Report, type InsertReport, type PipelineScan, type InsertPipelineScan, type ContainerScan, type InsertContainerScan, type NetworkScan, type InsertNetworkScan, type LinterScan, type InsertLinterScan, type LinterFixBatch, type InsertLinterFixBatch, type PipelineFixBatch, type InsertPipelineFixBatch, type NetworkFixBatch, type InsertNetworkFixBatch, type ContainerFixBatch, type InsertContainerFixBatch, type ScheduledScan, type InsertScheduledScan, type AlertSettings, type InsertAlertSettings, type SsoProvider, type InsertSsoProvider, type TermsOfServiceAcceptance, type InsertTermsOfServiceAcceptance, type FixValidationSession, type InsertFixValidationSession, type AutomatedFixJob, type InsertAutomatedFixJob, type GlobalFixJob, type InsertGlobalFixJob, type GlobalFixScanTask, type InsertGlobalFixScanTask, type Notification, type InsertNotification, type ApiKey, type AuditEvent, type Organization, type OrganizationMember, type OrganizationInvite, type GitConnection, type TrackerConnection, type WebhookEndpoint, type WebhookDelivery, type RemediationJob, type ShieldAdvisorConversation, type CveWatchlistEntry, type RiskException, type SecretsRotationTicket, type LearningProgress, type MobileRuntimeEvent } from "@shared/schema";
+import { randomBytes, randomUUID } from "crypto";
 import { db } from "./db";
-import { users, sessions, apiKeys, findings, mobileAppScans, mvpCodeScans, webAppScans, reports, pipelineScans, containerScans, networkScans, linterScans, linterFixBatches, pipelineFixBatches, networkFixBatches, containerFixBatches, scheduledScans, alertSettings, ssoProviders, termsOfServiceAcceptances, fixValidationSessions, automatedFixJobs, globalFixJobs, globalFixScanTasks, notifications, auditEvents, organizations, organizationMembers, gitConnections, trackerConnections, webhookEndpoints, webhookDeliveries, remediationJobs, shieldAdvisorConversations, cveWatchlistEntries, cveWatchlistNotified, riskExceptions, secretsRotationTickets, learningProgress } from "@shared/schema";
+import { users, sessions, apiKeys, findings, mobileAppScans, mvpCodeScans, webAppScans, reports, pipelineScans, containerScans, networkScans, linterScans, linterFixBatches, pipelineFixBatches, networkFixBatches, containerFixBatches, scheduledScans, alertSettings, ssoProviders, termsOfServiceAcceptances, fixValidationSessions, automatedFixJobs, globalFixJobs, globalFixScanTasks, notifications, auditEvents, organizations, organizationMembers, organizationInvites, gitConnections, trackerConnections, webhookEndpoints, webhookDeliveries, remediationJobs, shieldAdvisorConversations, cveWatchlistEntries, cveWatchlistNotified, riskExceptions, secretsRotationTickets, learningProgress, fpFeedback, mobileRuntimeEvents } from "@shared/schema";
 import { eq, and, or, lt, lte, sql, desc, isNull, isNotNull, inArray, type SQL } from "drizzle-orm";
 import { organizationRoleCanWriteScans } from "./rbac";
 import { encrypt } from "./encryption";
@@ -63,6 +63,47 @@ export interface IStorage {
   ensurePersonalOrganization(userId: string, username: string): Promise<void>;
   getOrganizationsForUser(userId: string): Promise<{ organization: Organization; role: string }[]>;
   getOrganizationMemberRole(organizationId: string, userId: string): Promise<string | undefined>;
+  listOrganizationMembers(organizationId: string): Promise<
+    {
+      userId: string;
+      email: string;
+      firstName: string;
+      lastName: string;
+      username: string;
+      role: string;
+      joinedAt: Date | null;
+    }[]
+  >;
+  listOrganizationInvites(organizationId: string): Promise<OrganizationInvite[]>;
+  createOrganizationInvite(params: {
+    organizationId: string;
+    email: string;
+    role: string;
+    invitedByUserId: string;
+  }): Promise<OrganizationInvite>;
+  revokeOrganizationInvite(inviteId: string, organizationId: string): Promise<boolean>;
+  getOrganizationInvitePreviewByToken(token: string): Promise<
+    | {
+        organizationId: string;
+        organizationName: string;
+        email: string;
+        role: string;
+        expired: boolean;
+        accepted: boolean;
+      }
+    | undefined
+  >;
+  acceptOrganizationInvite(
+    token: string,
+    userId: string,
+  ): Promise<
+    | { ok: true; organizationId: string }
+    | { ok: false; reason: "not_found" | "expired" | "accepted" | "email_mismatch" }
+  >;
+  removeOrganizationMember(
+    organizationId: string,
+    targetUserId: string,
+  ): Promise<"deleted" | "not_found" | "last_owner">;
   canMutateMvpCodeScan(userId: string, scan: MvpCodeScan): Promise<boolean>;
   canMutateMobileAppScan(userId: string, scan: MobileAppScan): Promise<boolean>;
   canMutateWebAppScan(userId: string, scan: WebAppScan): Promise<boolean>;
@@ -359,6 +400,21 @@ export interface IStorage {
   // Learning progress operations
   getLearningProgress(userId: string): Promise<LearningProgress[]>;
   upsertLearningProgress(userId: string, contentId: string, contentType: string, updates: { completed?: boolean; lastSectionIndex?: number }): Promise<LearningProgress>;
+
+  // P6-D5 / P6-I1 / P6-I2
+  upsertFpFeedback(userId: string, fingerprint: string, verdict: "likely_fp" | "true_positive"): Promise<void>;
+  getFpVerdictMapForUser(userId: string): Promise<Record<string, string>>;
+  insertMobileRuntimeEvent(data: {
+    userId: string;
+    mobileScanId: string;
+    platform: string;
+    eventType: string;
+    severity: string;
+    message: string;
+    payload?: Record<string, unknown> | null;
+  }): Promise<void>;
+  listMobileRuntimeEventsForScan(userId: string, scanId: string): Promise<MobileRuntimeEvent[]>;
+  getOrganizationById(id: string): Promise<Organization | undefined>;
 }
 
 export class DbStorage implements IStorage {
@@ -580,6 +636,173 @@ export class DbStorage implements IStorage {
       )
       .limit(1);
     return row[0]?.role;
+  }
+
+  async listOrganizationMembers(organizationId: string): Promise<
+    {
+      userId: string;
+      email: string;
+      firstName: string;
+      lastName: string;
+      username: string;
+      role: string;
+      joinedAt: Date | null;
+    }[]
+  > {
+    const rows = await db
+      .select({
+        userId: users.id,
+        email: users.email,
+        firstName: users.firstName,
+        lastName: users.lastName,
+        username: users.username,
+        role: organizationMembers.role,
+        joinedAt: organizationMembers.createdAt,
+      })
+      .from(organizationMembers)
+      .innerJoin(users, eq(organizationMembers.userId, users.id))
+      .where(eq(organizationMembers.organizationId, organizationId))
+      .orderBy(organizationMembers.createdAt);
+    return rows;
+  }
+
+  async listOrganizationInvites(organizationId: string): Promise<OrganizationInvite[]> {
+    return db
+      .select()
+      .from(organizationInvites)
+      .where(and(eq(organizationInvites.organizationId, organizationId), isNull(organizationInvites.acceptedAt)))
+      .orderBy(desc(organizationInvites.createdAt));
+  }
+
+  async createOrganizationInvite(params: {
+    organizationId: string;
+    email: string;
+    role: string;
+    invitedByUserId: string;
+  }): Promise<OrganizationInvite> {
+    const email = params.email.trim().toLowerCase();
+    const token = randomBytes(32).toString("hex");
+    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+    const [row] = await db
+      .insert(organizationInvites)
+      .values({
+        organizationId: params.organizationId,
+        email,
+        role: params.role,
+        token,
+        invitedByUserId: params.invitedByUserId,
+        expiresAt,
+      })
+      .returning();
+    return row;
+  }
+
+  async revokeOrganizationInvite(inviteId: string, organizationId: string): Promise<boolean> {
+    const res = await db
+      .delete(organizationInvites)
+      .where(and(eq(organizationInvites.id, inviteId), eq(organizationInvites.organizationId, organizationId)))
+      .returning({ id: organizationInvites.id });
+    return Boolean(res[0]);
+  }
+
+  async getOrganizationInvitePreviewByToken(token: string): Promise<
+    | {
+        organizationId: string;
+        organizationName: string;
+        email: string;
+        role: string;
+        expired: boolean;
+        accepted: boolean;
+      }
+    | undefined
+  > {
+    const rows = await db
+      .select({
+        invite: organizationInvites,
+        organizationName: organizations.name,
+      })
+      .from(organizationInvites)
+      .innerJoin(organizations, eq(organizationInvites.organizationId, organizations.id))
+      .where(eq(organizationInvites.token, token))
+      .limit(1);
+    const row = rows[0];
+    if (!row) return undefined;
+    const inv = row.invite;
+    const accepted = Boolean(inv.acceptedAt);
+    const expired = accepted ? false : new Date() > new Date(inv.expiresAt);
+    return {
+      organizationId: inv.organizationId,
+      organizationName: row.organizationName,
+      email: inv.email,
+      role: inv.role,
+      expired,
+      accepted,
+    };
+  }
+
+  async acceptOrganizationInvite(
+    token: string,
+    userId: string,
+  ): Promise<
+    | { ok: true; organizationId: string }
+    | { ok: false; reason: "not_found" | "expired" | "accepted" | "email_mismatch" }
+  > {
+    const invRows = await db.select().from(organizationInvites).where(eq(organizationInvites.token, token)).limit(1);
+    const inv = invRows[0];
+    if (!inv) return { ok: false, reason: "not_found" };
+    if (inv.acceptedAt) return { ok: false, reason: "accepted" };
+    if (new Date() > new Date(inv.expiresAt)) return { ok: false, reason: "expired" };
+    const user = await this.getUser(userId);
+    if (!user) return { ok: false, reason: "not_found" };
+    if (user.email.trim().toLowerCase() !== inv.email) return { ok: false, reason: "email_mismatch" };
+
+    const orgId = inv.organizationId;
+    await db.transaction(async (tx) => {
+      const existing = await tx
+        .select({ id: organizationMembers.id })
+        .from(organizationMembers)
+        .where(
+          and(eq(organizationMembers.organizationId, orgId), eq(organizationMembers.userId, userId)),
+        )
+        .limit(1);
+      if (!existing[0]) {
+        await tx.insert(organizationMembers).values({
+          organizationId: orgId,
+          userId,
+          role: inv.role,
+        });
+      }
+      await tx
+        .update(organizationInvites)
+        .set({ acceptedAt: new Date() })
+        .where(eq(organizationInvites.id, inv.id));
+    });
+    return { ok: true, organizationId: orgId };
+  }
+
+  async removeOrganizationMember(organizationId: string, targetUserId: string): Promise<"deleted" | "not_found" | "last_owner"> {
+    const target = await db
+      .select({ role: organizationMembers.role })
+      .from(organizationMembers)
+      .where(
+        and(eq(organizationMembers.organizationId, organizationId), eq(organizationMembers.userId, targetUserId)),
+      )
+      .limit(1);
+    if (!target[0]) return "not_found";
+    if (target[0].role === "owner") {
+      const owners = await db
+        .select({ id: organizationMembers.id })
+        .from(organizationMembers)
+        .where(and(eq(organizationMembers.organizationId, organizationId), eq(organizationMembers.role, "owner")));
+      if (owners.length <= 1) return "last_owner";
+    }
+    const res = await db
+      .delete(organizationMembers)
+      .where(
+        and(eq(organizationMembers.organizationId, organizationId), eq(organizationMembers.userId, targetUserId)),
+      )
+      .returning({ id: organizationMembers.id });
+    return res[0] ? "deleted" : "not_found";
   }
 
   async canMutateMvpCodeScan(userId: string, scan: MvpCodeScan): Promise<boolean> {
@@ -2507,6 +2730,63 @@ export class DbStorage implements IStorage {
       .returning();
     return result[0];
   }
+
+  async upsertFpFeedback(
+    userId: string,
+    fingerprint: string,
+    verdict: "likely_fp" | "true_positive",
+  ): Promise<void> {
+    await db
+      .insert(fpFeedback)
+      .values({ userId, fingerprint, verdict })
+      .onConflictDoUpdate({
+        target: [fpFeedback.userId, fpFeedback.fingerprint],
+        set: { verdict, updatedAt: new Date() },
+      });
+  }
+
+  async getFpVerdictMapForUser(userId: string): Promise<Record<string, string>> {
+    const rows = await db.select().from(fpFeedback).where(eq(fpFeedback.userId, userId));
+    const map: Record<string, string> = {};
+    for (const r of rows) {
+      map[r.fingerprint] = r.verdict;
+    }
+    return map;
+  }
+
+  async insertMobileRuntimeEvent(data: {
+    userId: string;
+    mobileScanId: string;
+    platform: string;
+    eventType: string;
+    severity: string;
+    message: string;
+    payload?: Record<string, unknown> | null;
+  }): Promise<void> {
+    await db.insert(mobileRuntimeEvents).values({
+      userId: data.userId,
+      mobileScanId: data.mobileScanId,
+      platform: data.platform,
+      eventType: data.eventType,
+      severity: data.severity,
+      message: data.message,
+      payload: data.payload ?? null,
+    });
+  }
+
+  async listMobileRuntimeEventsForScan(userId: string, scanId: string): Promise<MobileRuntimeEvent[]> {
+    return db
+      .select()
+      .from(mobileRuntimeEvents)
+      .where(and(eq(mobileRuntimeEvents.mobileScanId, scanId), eq(mobileRuntimeEvents.userId, userId)))
+      .orderBy(desc(mobileRuntimeEvents.createdAt));
+  }
+
+  async getOrganizationById(id: string): Promise<Organization | undefined> {
+    const rows = await db.select().from(organizations).where(eq(organizations.id, id)).limit(1);
+    return rows[0];
+  }
+
 }
 
 export const storage = new DbStorage();

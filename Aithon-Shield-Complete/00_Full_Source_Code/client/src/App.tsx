@@ -31,13 +31,11 @@ import Findings from "@/pages/Findings";
 import Archive from "@/pages/Archive";
 import Reports from "@/pages/Reports";
 import Settings from "@/pages/Settings";
-import Compliance from "@/pages/Compliance";
 import Learn from "@/pages/Learn";
-import AuditLog from "@/pages/AuditLog";
 import Workspace from "@/pages/Workspace";
+import InviteAccept from "@/pages/InviteAccept";
 import SecurityHealth from "@/pages/SecurityHealth";
 import DeveloperScoreCards from "@/pages/DeveloperScoreCards";
-import AttackPathGraphPage from "@/pages/AttackPathGraphPage";
 import ScheduledScansPage from "@/pages/ScheduledScans";
 import CveWatchlistPage from "@/pages/CveWatchlist";
 import SlaPage from "@/pages/Sla";
@@ -87,7 +85,6 @@ function Router() {
         <Route path="/findings" component={Findings} />
         <Route path="/security-health" component={SecurityHealth} />
         <Route path="/developer-score-cards" component={DeveloperScoreCards} />
-        <Route path="/attack-path" component={AttackPathGraphPage} />
         <Route path="/scheduled-scans" component={ScheduledScansPage} />
         <Route path="/cve-watchlist" component={CveWatchlistPage} />
         <Route path="/sla" component={SlaPage} />
@@ -96,10 +93,8 @@ function Router() {
         <Route path="/plans" component={PlansPage} />
         <Route path="/archive" component={Archive} />
         <Route path="/reports" component={Reports} />
-        <Route path="/compliance" component={Compliance} />
         <Route path="/attack-simulator" component={AttackSimulator} />
         <Route path="/learn" component={Learn} />
-        <Route path="/audit-log" component={AuditLog} />
         <Route path="/workspace" component={Workspace} />
         <Route path="/repos" component={ReposDashboard} />
         <Route path="/settings" component={Settings} />
@@ -282,7 +277,7 @@ function AuthCheck({ children }: { children: React.ReactNode }) {
   }
 
   // If not authenticated and not on login/signup page, redirect to login
-  if (!isAuthenticated && location !== "/login" && location !== "/signup") {
+  if (!isAuthenticated && location !== "/login" && location !== "/signup" && !location.startsWith("/invite/")) {
     return <Login />;
   }
 
@@ -332,6 +327,12 @@ function App() {
               <Route path="/signup">
                 <AuthCheck>
                   <Signup />
+                </AuthCheck>
+                <Toaster />
+              </Route>
+              <Route path="/invite/:token">
+                <AuthCheck>
+                  <InviteAccept />
                 </AuthCheck>
                 <Toaster />
               </Route>

@@ -16,6 +16,14 @@ import { DemoModeBanner } from "@/components/DemoModeBanner";
 
 type SignupForm = z.infer<typeof signUpSchema>;
 
+function getSafeRedirectPath(): string {
+  const params = new URLSearchParams(window.location.search);
+  const raw = params.get("redirect");
+  if (!raw) return "/";
+  if (!raw.startsWith("/") || raw.startsWith("//")) return "/";
+  return raw;
+}
+
 export default function Signup() {
   const [_, setLocation] = useLocation();
   const { toast } = useToast();
@@ -42,7 +50,7 @@ export default function Signup() {
         title: "Account created!",
         description: "Welcome to Aithon Shield. Let's get started.",
       });
-      setLocation("/");
+      setLocation(getSafeRedirectPath());
     },
     onError: (error: any) => {
       toast({

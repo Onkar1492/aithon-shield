@@ -30,6 +30,18 @@ export function shouldUseMvpDeterministicScan(): boolean {
 }
 
 /**
+ * Mobile scans: use deterministic demo results (no real binary download).
+ * Same logic as MVP scans — always simulated unless in production or
+ * AITHON_LIVE_MOBILE_SCANS=true is explicitly set.
+ */
+export function shouldUseMobileDeterministicScan(): boolean {
+  if (isDemoMode()) return true;
+  if (truthy(process.env.AITHON_LIVE_MOBILE_SCANS)) return false;
+  if (process.env.NODE_ENV === "production") return false;
+  return true;
+}
+
+/**
  * When true (and demo mode), the UI may show optional “use dummy targets” hints (see client
  * `demoStrictScanTargets`). The API does **not** reject scan creates — local/demo trial runs
  * need arbitrary URLs/IDs for functional testing.

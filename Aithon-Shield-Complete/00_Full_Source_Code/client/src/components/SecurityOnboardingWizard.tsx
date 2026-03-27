@@ -80,7 +80,6 @@ const STEPS: WizardStep[] = [
     features: [
       { label: "Security Health — MTTR, regressions, timeline", path: "/security-health" },
       { label: "Developer score cards — per-project engagement scores", path: "/developer-score-cards" },
-      { label: "Attack path graph — interactive phase view of findings", path: "/attack-path" },
       { label: "Scheduled Scans — recurring scans with drift detection", path: "/scheduled-scans" },
       { label: "CVE Watchlist — alerts when watched CVEs appear", path: "/cve-watchlist" },
     ],
@@ -89,18 +88,15 @@ const STEPS: WizardStep[] = [
     id: "governance",
     title: "Governance and compliance",
     description:
-      "Enforce policies with .aithonshield.yml, gate merges in CI/CD, generate SBOMs, and keep an immutable audit log of every action.",
+      "Enforce policies with .aithonshield.yml, gate merges in CI/CD, generate SBOMs, and track SLAs and accepted risk.",
     icon: Settings,
     features: [
       { label: "Settings → Security as code (.aithonshield.yml)", path: "/settings" },
       { label: "Settings → Issue trackers (Jira / Linear)", path: "/settings" },
       { label: "SLA — remediation deadlines and breaches", path: "/sla" },
       { label: "Risk exceptions — accepted risk with justification", path: "/risk-exceptions" },
-      { label: "Compliance — evidence package (ZIP) for auditors", path: "/compliance" },
-      { label: "Compliance — VEX document (JSON) for CVE triage", path: "/compliance" },
       { label: "Settings → Merge gate (GitHub Check Runs)", path: "/settings" },
-      { label: "Audit Log — immutable event history", path: "/audit-log" },
-      { label: "Compliance — framework mapping", path: "/compliance" },
+      { label: "Plans & Pricing — Free, Starter, and Pro", path: "/plans" },
     ],
   },
   {

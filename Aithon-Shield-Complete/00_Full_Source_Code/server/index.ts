@@ -7,8 +7,14 @@ import { ensureDevSeedUsers } from "./devSeedUsers";
 import { isDemoMode } from "./demoMode";
 import { apiGlobalRateLimitMiddleware } from "./rateLimitMiddleware";
 import { startScheduledScanEngine } from "./scheduledScanEngine";
+import { handleStripeWebhook } from "./stripeWebhook";
+import { pool } from "./db";
 
 const app = express();
+
+if (process.env.TRUST_PROXY === "1" || process.env.TRUST_PROXY === "true") {
+  app.set("trust proxy", 1);
+}
 
 const serverBootIso = new Date().toISOString();
 
@@ -25,6 +31,24 @@ app.get("/api/health", (_req, res) => {
     startedAt: serverBootIso,
   });
 });
+
+app.get("/api/health/ready", async (_req, res) => {
+  try {
+    await pool.query("select 1");
+    res.json({ ok: true, db: true });
+  } catch {
+    res.status(503).json({ ok: false, db: false });
+  }
+});
+
+app.post(
+  "/api/webhooks/stripe",
+  express.raw({ type: "application/json" }),
+  (req, res, next) => {
+    void handleStripeWebhook(req, res).catch(next);
+  },
+);
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 app.use(cookieParser());
@@ -86,8 +110,10 @@ app.use((req, res, next) => {
   res.on("finish", () => {
     const duration = Date.now() - start;
     if (path.startsWith("/api")) {
+      const verboseApiLog =
+        process.env.NODE_ENV !== "production" || process.env.API_LOG_RESPONSES === "true";
       let logLine = `${req.method} ${path} ${res.statusCode} in ${duration}ms`;
-      if (capturedJsonResponse) {
+      if (verboseApiLog && capturedJsonResponse) {
         logLine += ` :: ${JSON.stringify(capturedJsonResponse)}`;
       }
 
@@ -107,10 +133,13 @@ app.use((req, res, next) => {
 
   app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
     const status = err.status || err.statusCode || 500;
-    const message = err.message || "Internal Server Error";
-
-    res.status(status).json({ message });
-    throw err;
+    const isProd = process.env.NODE_ENV === "production";
+    const safeMessage =
+      isProd && status >= 500 ? "Internal Server Error" : err.message || "Internal Server Error";
+    if (status >= 500) {
+      console.error("[api-error]", err);
+    }
+    res.status(status).json({ message: safeMessage });
   });
 
   // importantly only setup vite in development and after
@@ -127,7 +156,7 @@ app.use((req, res, next) => {
   // this serves both the API and the client.
   // It is the only port that is not firewalled.
   const port = parseInt(process.env.PORT || '5001', 10);
-  server.listen(port, "0.0.0.0", async () => {
+  const httpServer = server.listen(port, "0.0.0.0", async () => {
     log(`serving on port ${port}`);
     log(`health: http://127.0.0.1:${port}/api/health  ·  app: http://127.0.0.1:${port}/`);
     if (isDemoMode()) {
@@ -176,4 +205,18 @@ app.use((req, res, next) => {
       }
     }, 24 * 60 * 60 * 1000); // 24 hours in milliseconds
   });
+
+  async function shutdown(signal: string) {
+    log(`Received ${signal}, shutting down…`);
+    httpServer.close(() => {
+      void pool
+        .end()
+        .catch(() => undefined)
+        .finally(() => process.exit(0));
+    });
+    setTimeout(() => process.exit(1), 10_000).unref();
+  }
+
+  process.once("SIGTERM", () => void shutdown("SIGTERM"));
+  process.once("SIGINT", () => void shutdown("SIGINT"));
 })();

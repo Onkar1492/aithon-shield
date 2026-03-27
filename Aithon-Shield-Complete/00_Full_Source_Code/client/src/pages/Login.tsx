@@ -12,10 +12,17 @@ import { Shield, Loader2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import logoImage from "@assets/image_1761361808622.png";
-import SsoLogin from "@/components/SsoLogin";
 import { DemoModeBanner } from "@/components/DemoModeBanner";
 
 type LoginForm = z.infer<typeof loginSchema>;
+
+function getSafeRedirectPath(): string {
+  const params = new URLSearchParams(window.location.search);
+  const raw = params.get("redirect");
+  if (!raw) return "/";
+  if (!raw.startsWith("/") || raw.startsWith("//")) return "/";
+  return raw;
+}
 
 export default function Login() {
   const [_, setLocation] = useLocation();
@@ -40,7 +47,7 @@ export default function Login() {
         title: "Welcome back!",
         description: "You've successfully logged in.",
       });
-      setLocation("/");
+      setLocation(getSafeRedirectPath());
     },
     onError: (error: any) => {
       toast({
@@ -132,7 +139,6 @@ export default function Login() {
           </Form>
 
           <div className="mt-6">
-            <SsoLogin />
           </div>
 
           <div className="mt-6 text-center text-sm">

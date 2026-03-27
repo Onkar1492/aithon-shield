@@ -516,8 +516,9 @@ export async function scanWebApp(
       : undefined;
 
     // Step 1–2: Crawl + OWASP (DAST)
+    let pages: Page[] = [];
     if (runDast) {
-      const pages = await crawlWebApplication(
+      pages = await crawlWebApplication(
         appUrl,
         authConfig,
         async (progress, stage) => {

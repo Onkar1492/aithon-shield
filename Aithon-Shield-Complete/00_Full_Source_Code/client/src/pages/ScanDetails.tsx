@@ -31,6 +31,7 @@ import {
   Wrench,
   Link2,
   Package,
+  Activity,
 } from "lucide-react";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -170,6 +171,11 @@ export default function ScanDetails() {
       // Poll every 2s if scan is in progress, otherwise stop polling
       return scanData?.scanStatus === "scanning" || scanData?.scanStatus === "in-progress" || scanData?.scanStatus === "pending" ? 2000 : false;
     },
+  });
+
+  const { data: mobileRuntime } = useQuery<{ events: Array<{ id: string; eventType: string; severity: string; message: string; createdAt: string }> }>({
+    queryKey: [`/api/mobile-scans/${scanId}/runtime-events`],
+    enabled: scanType === "mobile" && !!scanId && scan?.scanStatus === "completed",
   });
 
   // Fetch findings related to this scan
@@ -459,6 +465,39 @@ export default function ScanDetails() {
           </Card>
         );
       })()}
+
+      {scanType === "mobile" && scan?.scanStatus === "completed" && (
+        <Card className="p-6 border-emerald-500/20 bg-emerald-500/5">
+          <div className="flex items-start gap-3 mb-4">
+            <div className="h-10 w-10 rounded-lg bg-emerald-500/10 flex items-center justify-center shrink-0">
+              <Activity className="h-5 w-5 text-emerald-500" />
+            </div>
+            <div>
+              <h3 className="font-semibold">Mobile runtime monitoring (P6-I1)</h3>
+              <p className="text-sm text-muted-foreground mt-1">
+                Simulated on-device trace captured after the scan. Use this timeline to spot risky network/storage/permission patterns.
+              </p>
+            </div>
+          </div>
+          {!mobileRuntime?.events?.length ? (
+            <p className="text-sm text-muted-foreground">No runtime events yet — run a completed mobile scan to populate this panel.</p>
+          ) : (
+            <ul className="space-y-2 text-sm">
+              {mobileRuntime.events.map((ev) => (
+                <li key={ev.id} className="flex flex-col gap-0.5 border border-border/60 rounded-md p-3 bg-background/40">
+                  <div className="flex flex-wrap gap-2 items-center">
+                    <Badge variant="outline" className="text-[10px]">{ev.eventType}</Badge>
+                    <Badge variant="secondary" className="text-[10px] capitalize">{ev.severity}</Badge>
+                    <span className="text-xs text-muted-foreground">{new Date(ev.createdAt).toLocaleString()}</span>
+                  </div>
+                  <p className="text-foreground/90">{ev.message}</p>
+                </li>
+              ))}
+            </ul>
+          )}
+        </Card>
+      )}
+
 
       {/* SAST ↔ DAST correlation (web scans with linked repo) */}
       {scanType === "web" && (

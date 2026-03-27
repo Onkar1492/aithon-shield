@@ -20,6 +20,7 @@ import {
   FormMessage,
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
+import { Switch } from "@/components/ui/switch";
 import { useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -39,8 +40,22 @@ interface EditMobileAppScanDialogProps {
   scan: MobileAppScan;
 }
 
+function readWorkflowMeta(scan: MobileAppScan) {
+  const m = scan.workflowMetadata;
+  if (!m || typeof m !== "object") return { realDeviceDast: false, backendApiUrl: "" };
+  const o = m as Record<string, unknown>;
+  return {
+    realDeviceDast: o.realDeviceDast === true,
+    backendApiUrl: typeof o.backendApiUrl === "string" ? o.backendApiUrl : "",
+  };
+}
+
 export function EditMobileAppScanDialog({ open, onOpenChange, scan }: EditMobileAppScanDialogProps) {
   const { toast } = useToast();
+
+  const [realDeviceDast, setRealDeviceDast] = React.useState(false);
+  const [backendApiUrl, setBackendApiUrl] = React.useState("");
+  const initialAdvanced = React.useRef({ realDeviceDast: false, backendApiUrl: "" });
 
   const form = useForm<EditScanFormData>({
     resolver: zodResolver(editScanSchema),
@@ -54,16 +69,23 @@ export function EditMobileAppScanDialog({ open, onOpenChange, scan }: EditMobile
   // Reset form when dialog opens or scan changes (preserves dirty tracking during editing)
   React.useEffect(() => {
     if (open) {
-      form.reset({
-        appName: scan.appName,
-        appId: scan.appId,
-        version: scan.version,
-      }, { keepDirtyValues: false });
+      form.reset(
+        {
+          appName: scan.appName,
+          appId: scan.appId,
+          version: scan.version,
+        },
+        { keepDirtyValues: false },
+      );
+      const adv = readWorkflowMeta(scan);
+      setRealDeviceDast(adv.realDeviceDast);
+      setBackendApiUrl(adv.backendApiUrl);
+      initialAdvanced.current = { ...adv };
     }
   }, [open, scan.id]);
 
   const updateMutation = useMutation({
-    mutationFn: async (data: Partial<EditScanFormData>) => {
+    mutationFn: async (data: Record<string, unknown>) => {
       const res = await apiRequest("PATCH", `/api/mobile-scans/${scan.id}`, data);
       return await res.json();
     },
@@ -76,31 +98,39 @@ export function EditMobileAppScanDialog({ open, onOpenChange, scan }: EditMobile
       });
       onOpenChange(false);
     },
-    onError: (error: any) => {
+    onError: (error: unknown) => {
       toast({
         title: "Update failed",
-        description: error.message || "Failed to update scan configuration",
+        description: error instanceof Error ? error.message : "Failed to update scan configuration",
         variant: "destructive",
       });
     },
   });
 
   const handleSubmit = (data: EditScanFormData) => {
-    // Only send changed fields (true PATCH semantics) using react-hook-form's dirty tracking
     const dirtyFields = form.formState.dirtyFields;
-    const changedFields: Partial<EditScanFormData> = {};
-    
-    if (dirtyFields.appName) {
-      changedFields.appName = data.appName;
-    }
-    if (dirtyFields.appId) {
-      changedFields.appId = data.appId;
-    }
-    if (dirtyFields.version) {
-      changedFields.version = data.version;
+    const changedFields: Record<string, unknown> = {};
+
+    if (dirtyFields.appName) changedFields.appName = data.appName;
+    if (dirtyFields.appId) changedFields.appId = data.appId;
+    if (dirtyFields.version) changedFields.version = data.version;
+
+    const advChanged =
+      realDeviceDast !== initialAdvanced.current.realDeviceDast ||
+      backendApiUrl.trim() !== initialAdvanced.current.backendApiUrl.trim();
+
+    if (advChanged) {
+      const prev =
+        scan.workflowMetadata && typeof scan.workflowMetadata === "object"
+          ? ({ ...scan.workflowMetadata } as Record<string, unknown>)
+          : {};
+      const next: Record<string, unknown> = { ...prev, realDeviceDast };
+      const trimmed = backendApiUrl.trim();
+      if (trimmed) next.backendApiUrl = trimmed;
+      else delete next.backendApiUrl;
+      changedFields.workflowMetadata = next;
     }
 
-    // Only mutate if there are actual changes
     if (Object.keys(changedFields).length > 0) {
       updateMutation.mutate(changedFields);
     } else {
@@ -114,11 +144,12 @@ export function EditMobileAppScanDialog({ open, onOpenChange, scan }: EditMobile
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[500px]" data-testid="dialog-edit-mobile-scan">
+      <DialogContent className="sm:max-w-lg" data-testid="dialog-edit-mobile-scan">
         <DialogHeader>
           <DialogTitle data-testid="heading-edit-scan">Edit Scan Configuration</DialogTitle>
           <DialogDescription data-testid="text-edit-scan-description">
-            Update the scan settings. Note: Platform cannot be changed to preserve scan results.
+            Update the scan settings. Platform cannot be changed to preserve scan results. Optional real-device DAST runs
+            after the static/mobile analysis when you start a new scan.
           </DialogDescription>
         </DialogHeader>
 
@@ -131,11 +162,7 @@ export function EditMobileAppScanDialog({ open, onOpenChange, scan }: EditMobile
                 <FormItem>
                   <FormLabel data-testid="label-app-name">App Name</FormLabel>
                   <FormControl>
-                    <Input
-                      {...field}
-                      placeholder="My Mobile App"
-                      data-testid="input-app-name"
-                    />
+                    <Input {...field} placeholder="My Mobile App" data-testid="input-app-name" />
                   </FormControl>
                   <FormMessage />
                 </FormItem>
@@ -149,11 +176,7 @@ export function EditMobileAppScanDialog({ open, onOpenChange, scan }: EditMobile
                 <FormItem>
                   <FormLabel data-testid="label-app-id">App ID</FormLabel>
                   <FormControl>
-                    <Input
-                      {...field}
-                      placeholder="com.example.app"
-                      data-testid="input-app-id"
-                    />
+                    <Input {...field} placeholder="com.example.app" data-testid="input-app-id" />
                   </FormControl>
                   <FormMessage />
                 </FormItem>
@@ -167,11 +190,7 @@ export function EditMobileAppScanDialog({ open, onOpenChange, scan }: EditMobile
                 <FormItem>
                   <FormLabel data-testid="label-version">Version</FormLabel>
                   <FormControl>
-                    <Input
-                      {...field}
-                      placeholder="1.0.0"
-                      data-testid="input-version"
-                    />
+                    <Input {...field} placeholder="1.0.0" data-testid="input-version" />
                   </FormControl>
                   <FormMessage />
                 </FormItem>
@@ -184,20 +203,42 @@ export function EditMobileAppScanDialog({ open, onOpenChange, scan }: EditMobile
               <span className="text-xs">(cannot be changed)</span>
             </div>
 
+            <div className="rounded-md border border-border/80 p-4 space-y-4">
+              <div>
+                <h4 className="text-sm font-medium">Real-device DAST (P6-C9)</h4>
+                <p className="text-xs text-muted-foreground mt-1">
+                  Adds lightweight API probes on the next scan run. Provide your backend base URL if the app talks to a
+                  specific API host.
+                </p>
+              </div>
+              <div className="flex items-center justify-between gap-3">
+                <FormLabel htmlFor="real-device-dast" className="cursor-pointer">
+                  Enable real-device style DAST pass
+                </FormLabel>
+                <Switch
+                  id="real-device-dast"
+                  checked={realDeviceDast}
+                  onCheckedChange={setRealDeviceDast}
+                  data-testid="switch-real-device-dast"
+                />
+              </div>
+              <div className="space-y-2">
+                <FormLabel htmlFor="backend-api-url">Backend API base URL (optional)</FormLabel>
+                <Input
+                  id="backend-api-url"
+                  placeholder="https://api.example.com"
+                  value={backendApiUrl}
+                  onChange={(e) => setBackendApiUrl(e.target.value)}
+                  data-testid="input-backend-api-url"
+                />
+              </div>
+            </div>
+
             <DialogFooter>
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => onOpenChange(false)}
-                data-testid="button-cancel-edit"
-              >
+              <Button type="button" variant="outline" onClick={() => onOpenChange(false)} data-testid="button-cancel-edit">
                 Cancel
               </Button>
-              <Button
-                type="submit"
-                disabled={updateMutation.isPending}
-                data-testid="button-save-changes"
-              >
+              <Button type="submit" disabled={updateMutation.isPending} data-testid="button-save-changes">
                 {updateMutation.isPending ? "Saving..." : "Save Changes"}
               </Button>
             </DialogFooter>

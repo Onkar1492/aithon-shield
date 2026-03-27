@@ -1,6 +1,7 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
+import { getSessionCookieOptions } from "./env";
 import { 
   insertFindingSchema, 
   insertMobileAppScanSchema,
@@ -17,7 +18,6 @@ import {
   insertLinterScanSchema,
   insertScheduledScanSchema,
   insertAlertSettingsSchema,
-  insertSsoProviderSchema,
   insertTermsOfServiceAcceptanceSchema,
   signUpSchema,
   loginSchema,
@@ -32,10 +32,6 @@ import QRCode from "qrcode";
 import PDFDocument from "pdfkit";
 import { sendAlerts } from "./alertService";
 import { fetchThreatIntelligence } from "./threatFeedService";
-import passport from "passport";
-import { randomBytes } from "crypto";
-import { createSamlStrategy, generateSamlMetadata } from "./samlService";
-import { getAuthorizationUrl, handleOidcCallback, clearOidcClientCache } from "./oidcService";
 import { hashPassword, comparePassword, createSession, getSessionUserId, deleteSession, setupSessionCleanup } from "./auth";
 import { sendPushNotification, getVapidPublicKey, notifyScanStart, notifyScanComplete, notifyFixesApplied, notifyUploadComplete } from "./pushNotificationService";
 import { scanWebApp } from "./services/webScanService";
@@ -54,18 +50,19 @@ import { registerAithonShieldPolicyRoutes } from "./aithonShieldPolicyRoutes";
 import { registerCveWatchlistRoutes } from "./cveWatchlistRoutes";
 import { registerSlaRoutes } from "./slaRoutes";
 import { registerRiskExceptionRoutes } from "./riskExceptionRoutes";
-import { registerComplianceEvidenceRoutes } from "./complianceEvidenceRoutes";
-import { registerVexRoutes } from "./vexRoutes";
 import { registerTrackerIntegrationRoutes } from "./trackerIntegrationRoutes";
-import { registerWebhookRoutes } from "./webhookRoutes";
 import { registerDeveloperScoreCardRoutes } from "./developerScoreCardRoutes";
 import { registerSecretsRotationRoutes } from "./secretsRotationRoutes";
 import { TIER_PLANS, TIER_FEATURES, TIER_LIMITS, type TierName } from "@shared/tierConfig";
 import { LEARNING_MODULES, VULNERABILITY_EXPLAINERS } from "@shared/learningContent";
 import { getAppConfigPayload, isDemoMode } from "./demoMode";
+import { organizationRoleCanManageTeam } from "./rbac";
 import { authStrictRateLimitMiddleware } from "./rateLimitMiddleware";
 import { buildShieldAdvisorSystemPrompt, runShieldAdvisorModel } from "./services/shieldAdvisorService";
 import { enrichFindingWithFixConfidence, enrichFindingsList } from "./findingsEnrichment";
+import { enrichFindingFpSuppression } from "./services/falsePositiveSuppressionService";
+import { recordSimulatedMobileRuntimeEvents } from "./services/mobileRuntimeMonitoringService";
+import { runRealDeviceMobileDast } from "./services/realDeviceMobileDastService";
 import { clusterFindings, getDuplicateClusters, computeFingerprint } from "./services/findingsDeduplicationService";
 import { buildMultiRepoSummary } from "./services/repoEnvironmentSummaryService";
 import { buildUpgradePlan } from "./services/dependencyUpgradePlannerService";
@@ -78,6 +75,13 @@ import {
   normalizeRepositoryUrl,
 } from "./services/sastDastCorrelationService";
 import type { ContainerScan } from "@shared/schema";
+import {
+  isStripeSubscriptionConfigured,
+  createSubscriptionCheckoutSession,
+  createBillingPortalSession,
+  getPublicBaseUrl,
+  syncStripeSubscriptionForUser,
+} from "./stripeSubscriptionService";
 
 // Extend Express User type to match our schema
 declare global {
@@ -150,6 +154,13 @@ async function runContainerImageLayerScanJob(scan: ContainerScan): Promise<void>
 }
 
 export async function registerRoutes(app: Express): Promise<Server> {
+  function normalizeSubscriptionTier(raw: string | null | undefined): TierName {
+    const v = (raw || "free").toLowerCase();
+    if (v === "enterprise") return "pro";
+    if (v === "free" || v === "starter" || v === "pro") return v as TierName;
+    return "free";
+  }
+
   // put application routes here
   // prefix all routes with /api
 
@@ -159,6 +170,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.get("/api/app-config", (_req, res) => {
     res.json(getAppConfigPayload());
   });
+
 
   const { requireAuth, requireSessionAuth } = buildAuthMiddleware(storage);
 
@@ -184,17 +196,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
   /** Registered early (same pattern as security-health) so dev Vite catch-all never wins. */
   registerRiskExceptionRoutes(app, { storage, requireAuth });
 
-  /** Compliance evidence ZIP download. */
-  registerComplianceEvidenceRoutes(app, { storage, requireAuth });
-
-  /** CycloneDX VEX JSON from findings. */
-  registerVexRoutes(app, { storage, requireAuth });
-
   /** Jira Cloud + Linear issue creation from findings. */
   registerTrackerIntegrationRoutes(app, { storage, requireSessionAuth });
-
-  /** Structured webhooks + SIEM (JSON / CEF / syslog). */
-  registerWebhookRoutes(app, { storage, requireSessionAuth });
 
   /** Per-project developer score cards from findings. */
   registerDeveloperScoreCardRoutes(app, { storage, requireAuth });
@@ -211,7 +214,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const user = await storage.getUser(req.user.id);
       if (!user) return res.status(404).json({ message: "User not found" });
-      const tier = (user.subscriptionTier || "free") as TierName;
+      const tier = normalizeSubscriptionTier(user.subscriptionTier);
       const plan = TIER_PLANS.find((p) => p.id === tier) ?? TIER_PLANS[0];
       const limits = TIER_LIMITS[tier] ?? TIER_LIMITS.free;
       res.json({ tier, plan, limits, subscriptionStatus: user.subscriptionStatus ?? "active" });
@@ -223,8 +226,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.post("/api/plans/upgrade", requireAuth, async (req: any, res) => {
     try {
       const { tier } = req.body;
-      if (!tier || !["free", "pro", "enterprise"].includes(tier)) {
-        return res.status(400).json({ message: "Invalid tier. Must be free, pro, or enterprise." });
+      if (!tier || !["free", "starter", "pro"].includes(tier)) {
+        return res.status(400).json({ message: "Invalid tier. Must be free, starter, or pro." });
       }
       const updated = await storage.updateUser(req.user.id, { subscriptionTier: tier });
       if (!updated) return res.status(404).json({ message: "User not found" });
@@ -241,6 +244,61 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.json({ tier, plan, limits, message: `Upgraded to ${plan.name}` });
     } catch (e: any) {
       res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.get("/api/billing/status", (_req, res) => {
+    res.json({ stripeSubscriptionBillingEnabled: isStripeSubscriptionConfigured() });
+  });
+
+  app.post("/api/billing/checkout-session", requireAuth, async (req: any, res) => {
+    try {
+      if (!isStripeSubscriptionConfigured()) {
+        return res.status(503).json({ message: "Stripe subscription billing is not configured" });
+      }
+      const { tier } = req.body ?? {};
+      if (tier !== "starter" && tier !== "pro") {
+        return res.status(400).json({ message: "tier must be starter or pro" });
+      }
+      const user = await storage.getUser(req.user.id);
+      if (!user) return res.status(404).json({ message: "User not found" });
+      const baseUrl = getPublicBaseUrl(req);
+      const { url } = await createSubscriptionCheckoutSession({ storage, user, tier, baseUrl });
+      res.json({ url });
+    } catch (e: any) {
+      res.status(500).json({ message: e?.message ?? "Checkout failed" });
+    }
+  });
+
+  app.post("/api/billing/portal-session", requireAuth, async (req: any, res) => {
+    try {
+      if (!isStripeSubscriptionConfigured()) {
+        return res.status(503).json({ message: "Stripe subscription billing is not configured" });
+      }
+      const user = await storage.getUser(req.user.id);
+      if (!user) return res.status(404).json({ message: "User not found" });
+      const baseUrl = getPublicBaseUrl(req);
+      const { url } = await createBillingPortalSession({ user, baseUrl });
+      res.json({ url });
+    } catch (e: any) {
+      res.status(500).json({ message: e?.message ?? "Portal failed" });
+    }
+  });
+
+  app.post("/api/billing/sync", requireAuth, async (req: any, res) => {
+    try {
+      const user = await storage.getUser(req.user.id);
+      if (!user) return res.status(404).json({ message: "User not found" });
+      const result = await syncStripeSubscriptionForUser(storage, user);
+      if (result.synced) {
+        const updated = await storage.getUser(req.user.id);
+        const { password: _, ...safe } = updated!;
+        res.json({ synced: true, tier: result.tier, user: safe });
+      } else {
+        res.json({ synced: false, tier: user.subscriptionTier });
+      }
+    } catch (e: any) {
+      res.status(500).json({ message: e?.message ?? "Sync failed" });
     }
   });
 
@@ -898,12 +956,7 @@ return user;`;
       const sessionId = await createSession(storage, user.id);
       
       // Set session cookie
-      res.cookie('sessionId', sessionId, {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
-        sameSite: 'lax',
-        maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
-      });
+      res.cookie('sessionId', sessionId, getSessionCookieOptions());
       
       // TODO: Send welcome email when email service is configured
       // For now, we'll just log it
@@ -954,12 +1007,7 @@ return user;`;
       const sessionId = await createSession(storage, user.id);
       
       // Set session cookie
-      res.cookie('sessionId', sessionId, {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
-        sameSite: 'lax',
-        maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
-      });
+      res.cookie('sessionId', sessionId, getSessionCookieOptions());
       
       // Return user without password
       const { password: _, ...userWithoutPassword } = user;
@@ -987,14 +1035,16 @@ return user;`;
         });
       }
       await deleteSession(storage, sessionId);
-      res.clearCookie('sessionId');
+      const c = getSessionCookieOptions();
+      res.clearCookie("sessionId", { path: c.path, sameSite: c.sameSite, secure: c.secure });
     }
     res.json({ message: "Logged out successfully" });
   });
 
   app.get("/api/auth/me", requireAuth, async (req: any, res) => {
     const { password: _, ...userWithoutPassword } = req.user;
-    res.json({ user: userWithoutPassword });
+    const tier = normalizeSubscriptionTier(userWithoutPassword.subscriptionTier);
+    res.json({ user: { ...userWithoutPassword, subscriptionTier: tier } });
   });
 
   app.get("/api/api-keys", requireSessionAuth, async (req: any, res) => {
@@ -1121,6 +1171,144 @@ return user;`;
       })),
     });
   });
+
+  const inviteRoleSchema = z.enum(["admin", "developer", "viewer", "auditor"]);
+
+  function inviteRoleAllowed(inviterRole: string, targetRole: string): boolean {
+    if (targetRole === "admin") return inviterRole === "owner";
+    return organizationRoleCanManageTeam(inviterRole);
+  }
+
+  app.get("/api/organizations/:orgId/members", requireSessionAuth, async (req: any, res) => {
+    const orgId = String(req.params.orgId);
+    const role = await storage.getOrganizationMemberRole(orgId, req.user.id);
+    if (!role) return res.status(404).json({ message: "Organization not found" });
+    const members = await storage.listOrganizationMembers(orgId);
+    res.json({ members });
+  });
+
+  app.get("/api/organizations/:orgId/invites", requireSessionAuth, async (req: any, res) => {
+    const orgId = String(req.params.orgId);
+    const role = await storage.getOrganizationMemberRole(orgId, req.user.id);
+    if (!role) return res.status(404).json({ message: "Organization not found" });
+    if (!organizationRoleCanManageTeam(role)) return res.status(403).json({ message: "Forbidden" });
+    const invites = await storage.listOrganizationInvites(orgId);
+    res.json({ invites });
+  });
+
+  app.post("/api/organizations/:orgId/invites", requireSessionAuth, async (req: any, res) => {
+    try {
+      const orgId = String(req.params.orgId);
+      const inviterRole = await storage.getOrganizationMemberRole(orgId, req.user.id);
+      if (!inviterRole) return res.status(404).json({ message: "Organization not found" });
+      if (!organizationRoleCanManageTeam(inviterRole)) return res.status(403).json({ message: "Forbidden" });
+      const body = z
+        .object({ email: z.string().trim().email(), role: inviteRoleSchema })
+        .parse(req.body);
+      if (!inviteRoleAllowed(inviterRole, body.role)) return res.status(403).json({ message: "Cannot assign that role" });
+      const email = body.email.toLowerCase();
+      const existingUser = await storage.getUserByEmail(email);
+      if (existingUser) {
+        const membership = await storage.getOrganizationMemberRole(orgId, existingUser.id);
+        if (membership) return res.status(400).json({ message: "User already in this workspace" });
+      }
+      const invite = await storage.createOrganizationInvite({
+        organizationId: orgId,
+        email,
+        role: body.role,
+        invitedByUserId: req.user.id,
+      });
+      void logAuditEvent({
+        userId: req.user.id,
+        action: "org.invite_created",
+        resourceType: "organization",
+        resourceId: orgId,
+        metadata: { inviteId: invite.id, email },
+        req,
+      });
+      res.status(201).json({ invite });
+    } catch (e: any) {
+      if (e instanceof ZodError) return res.status(400).json({ message: e.errors[0].message });
+      const msg = String(e?.message ?? e?.cause ?? "");
+      if (msg.includes("unique") || msg.includes("duplicate")) {
+        return res.status(400).json({ message: "An active invite already exists for this email" });
+      }
+      res.status(500).json({ message: e?.message ?? "Failed to create invite" });
+    }
+  });
+
+  app.delete("/api/organizations/:orgId/invites/:inviteId", requireSessionAuth, async (req: any, res) => {
+    const orgId = String(req.params.orgId);
+    const inviteId = String(req.params.inviteId);
+    const inviterRole = await storage.getOrganizationMemberRole(orgId, req.user.id);
+    if (!inviterRole) return res.status(404).json({ message: "Organization not found" });
+    if (!organizationRoleCanManageTeam(inviterRole)) return res.status(403).json({ message: "Forbidden" });
+    const ok = await storage.revokeOrganizationInvite(inviteId, orgId);
+    if (!ok) return res.status(404).json({ message: "Invite not found" });
+    void logAuditEvent({
+      userId: req.user.id,
+      action: "org.invite_revoked",
+      resourceType: "organization",
+      resourceId: orgId,
+      metadata: { inviteId },
+      req,
+    });
+    res.json({ ok: true });
+  });
+
+  app.get("/api/invites/:token", async (req, res) => {
+    const preview = await storage.getOrganizationInvitePreviewByToken(String(req.params.token));
+    if (!preview) return res.status(404).json({ message: "Invite not found" });
+    res.json(preview);
+  });
+
+  app.post("/api/invites/:token/accept", requireSessionAuth, async (req: any, res) => {
+    const token = String(req.params.token);
+    const result = await storage.acceptOrganizationInvite(token, req.user.id);
+    if (!result.ok) {
+      const map: Record<string, number> = {
+        not_found: 404,
+        expired: 410,
+        accepted: 409,
+        email_mismatch: 403,
+      };
+      return res.status(map[result.reason] ?? 400).json({ message: result.reason });
+    }
+    void logAuditEvent({
+      userId: req.user.id,
+      action: "org.invite_accepted",
+      resourceType: "organization",
+      resourceId: result.organizationId,
+      req,
+    });
+    res.json({ ok: true, organizationId: result.organizationId });
+  });
+
+  app.delete("/api/organizations/:orgId/members/:userId", requireSessionAuth, async (req: any, res) => {
+    const orgId = String(req.params.orgId);
+    const targetUserId = String(req.params.userId);
+    const requesterRole = await storage.getOrganizationMemberRole(orgId, req.user.id);
+    if (!requesterRole) return res.status(404).json({ message: "Organization not found" });
+    if (!organizationRoleCanManageTeam(requesterRole)) return res.status(403).json({ message: "Forbidden" });
+    const targetRole = await storage.getOrganizationMemberRole(orgId, targetUserId);
+    if (!targetRole) return res.status(404).json({ message: "Member not found" });
+    if (targetRole === "owner" && requesterRole !== "owner") {
+      return res.status(403).json({ message: "Forbidden" });
+    }
+    const out = await storage.removeOrganizationMember(orgId, targetUserId);
+    if (out === "not_found") return res.status(404).json({ message: "Member not found" });
+    if (out === "last_owner") return res.status(400).json({ message: "Cannot remove the last owner" });
+    void logAuditEvent({
+      userId: req.user.id,
+      action: "org.member_removed",
+      resourceType: "organization",
+      resourceId: orgId,
+      metadata: { removedUserId: targetUserId },
+      req,
+    });
+    res.json({ ok: true });
+  });
+
 
   app.patch("/api/user/profile", requireSessionAuth, async (req: any, res) => {
     try {
@@ -1289,7 +1477,12 @@ return user;`;
         const dateB = b.scanCreatedAt ? new Date(b.scanCreatedAt).getTime() : 0;
         return dateB - dateA;
       });
-      res.json(enrichFindingsList(sortedFindings));
+      const fpMap = await storage.getFpVerdictMapForUser(req.user.id);
+      const enriched = enrichFindingsList(sortedFindings).map((f) => ({
+        ...f,
+        fpSuppression: enrichFindingFpSuppression(f, fpMap),
+      }));
+      res.json(enriched);
     } catch (error: any) {
       res.status(500).json({ message: error.message });
     }
@@ -1360,7 +1553,13 @@ return user;`;
   app.get("/api/findings/archived", requireAuth, async (req: any, res) => {
     try {
       const archivedFindings = await storage.getArchivedFindings(req.user.id);
-      res.json(enrichFindingsList(archivedFindings));
+      const fpMapA = await storage.getFpVerdictMapForUser(req.user.id);
+      res.json(
+        enrichFindingsList(archivedFindings).map((f) => ({
+          ...f,
+          fpSuppression: enrichFindingFpSuppression(f, fpMapA),
+        })),
+      );
     } catch (error: any) {
       res.status(500).json({ message: error.message });
     }
@@ -1371,7 +1570,36 @@ return user;`;
     if (!f) {
       return res.status(404).json({ message: "Finding not found" });
     }
-    res.json(enrichFindingWithFixConfidence(f));
+    const fpMap = await storage.getFpVerdictMapForUser(req.user.id);
+    res.json({
+      ...enrichFindingWithFixConfidence(f),
+      fpSuppression: enrichFindingFpSuppression(f, fpMap),
+    });
+  });
+
+
+  app.post("/api/findings/:id/fp-feedback", requireAuth, async (req: any, res) => {
+    try {
+      const schema = z.object({ verdict: z.enum(["likely_fp", "true_positive"]) });
+      const { verdict } = schema.parse(req.body);
+      const finding = await storage.getFinding(req.params.id, req.user.id);
+      if (!finding) {
+        return res.status(404).json({ message: "Finding not found" });
+      }
+      const fingerprint = computeFingerprint(finding);
+      await storage.upsertFpFeedback(req.user.id, fingerprint, verdict);
+      void logAuditEvent({
+        userId: req.user.id,
+        action: "finding.fp_feedback",
+        resourceType: "finding",
+        resourceId: finding.id,
+        metadata: { verdict, fingerprint },
+        req,
+      });
+      res.json({ ok: true, fingerprint, verdict });
+    } catch (error: any) {
+      res.status(400).json({ message: error.message });
+    }
   });
 
   app.post("/api/findings", requireAuth, async (req: any, res) => {
@@ -1591,6 +1819,20 @@ return user;`;
     }
   });
 
+
+  app.get("/api/mobile-scans/:id/runtime-events", requireAuth, async (req: any, res) => {
+    try {
+      const scan = await storage.getMobileAppScan(req.params.id, req.user.id);
+      if (!scan) {
+        return res.status(404).json({ message: "Scan not found" });
+      }
+      const rows = await storage.listMobileRuntimeEventsForScan(req.user.id, req.params.id);
+      res.json({ events: rows });
+    } catch (error: any) {
+      res.status(500).json({ message: error.message });
+    }
+  });
+
   app.get("/api/mobile-scans/:id/findings", requireAuth, async (req: any, res) => {
     try {
       const scan = await storage.getMobileAppScan(req.params.id, req.user.id);
@@ -1636,7 +1878,19 @@ return user;`;
         return res.status(400).json({ message: "No fields to update" });
       }
 
-      const updatedScan = await storage.updateMobileAppScan(req.params.id, req.user.id, validatedData);
+      let payload: Record<string, unknown> = { ...validatedData };
+      if (validatedData.workflowMetadata != null) {
+        const prev =
+          scan.workflowMetadata && typeof scan.workflowMetadata === "object"
+            ? (scan.workflowMetadata as Record<string, unknown>)
+            : {};
+        payload = {
+          ...validatedData,
+          workflowMetadata: { ...prev, ...(validatedData.workflowMetadata as Record<string, unknown>) },
+        };
+      }
+
+      const updatedScan = await storage.updateMobileAppScan(req.params.id, req.user.id, payload as any);
       if (!updatedScan) {
         return res.status(404).json({ message: "Scan not found" });
       }
@@ -1745,7 +1999,6 @@ return user;`;
       };
 
 
-
       // Start real scan in background (non-blocking)
       const mobileMeta = scan.workflowMetadata as Record<string, unknown> | null | undefined;
       const mobileMods = resolvedSecurityModules(mobileMeta, ["SAST", "SCA", "Secrets"]);
@@ -1762,8 +2015,30 @@ return user;`;
         },
         progressCallback
       ).then(async (result) => {
-        // Create findings from scan result
-        for (const vulnerability of result.vulnerabilities) {
+        let allVulnerabilities = [...result.vulnerabilities];
+
+        await recordSimulatedMobileRuntimeEvents(
+          (d) => storage.insertMobileRuntimeEvent(d),
+          scan.userId,
+          scan.id,
+          scan.platform as "ios" | "android",
+          scan.appName,
+        );
+
+        const wantRealDeviceDast = Boolean(mobileMeta && (mobileMeta as { realDeviceDast?: boolean }).realDeviceDast === true);
+        if (wantRealDeviceDast) {
+          const apiUrl = (mobileMeta as { backendApiUrl?: string } | null | undefined)?.backendApiUrl;
+          const dastVulns = await runRealDeviceMobileDast({
+            platform: scan.platform as "ios" | "android",
+            backendApiUrl: apiUrl,
+            appName: scan.appName,
+            appId: scan.appId,
+          });
+          allVulnerabilities = allVulnerabilities.concat(dastVulns);
+        }
+
+        // Create findings from scan result (+ optional real-device DAST)
+        for (const vulnerability of allVulnerabilities) {
           await storage.createFinding({
             userId: scan.userId,
             title: vulnerability.title,
@@ -1784,21 +2059,22 @@ return user;`;
             mobileScanId: scan.id,
             scanId: scan.id,
             scanType: "mobile",
+            dastProof: vulnerability.dastProof ? JSON.stringify(vulnerability.dastProof) : undefined,
           });
         }
 
         // Calculate severity counts
-        const criticalCount = result.vulnerabilities.filter(v => v.severity === 'CRITICAL').length;
-        const highCount = result.vulnerabilities.filter(v => v.severity === 'HIGH').length;
-        const mediumCount = result.vulnerabilities.filter(v => v.severity === 'MEDIUM').length;
-        const lowCount = result.vulnerabilities.filter(v => v.severity === 'LOW').length;
+        const criticalCount = allVulnerabilities.filter(v => v.severity === 'CRITICAL').length;
+        const highCount = allVulnerabilities.filter(v => v.severity === 'HIGH').length;
+        const mediumCount = allVulnerabilities.filter(v => v.severity === 'MEDIUM').length;
+        const lowCount = allVulnerabilities.filter(v => v.severity === 'LOW').length;
 
         // Update scan with completion status
         await storage.updateMobileAppScan(req.params.id, req.user.id, {
           scanStatus: 'completed',
           scanProgress: 100,
           scanStage: 'Scan complete',
-          findingsCount: result.vulnerabilities.length,
+          findingsCount: allVulnerabilities.length,
           criticalCount,
           highCount,
           mediumCount,
@@ -1813,7 +2089,7 @@ return user;`;
           scan.id,
           'mobile',
           scan.appName || 'Mobile App Scan',
-          result.vulnerabilities.length
+          allVulnerabilities.length
         );
       }).catch(async (error: any) => {
         // Handle error and convert to user-friendly message
@@ -3483,7 +3759,7 @@ return user;`;
         req.user.id,
         scanId,
         scanType,
-        subscriptionTier as 'free' | 'pro' | 'enterprise'
+        subscriptionTier as 'free' | 'starter' | 'pro'
       );
       
       res.json(validationResult);
@@ -7293,378 +7569,6 @@ return user;`;
       } else {
         res.status(500).json({ message: error.message });
       }
-    }
-  });
-
-  // SSO Provider Management endpoints
-  app.get("/api/sso/providers", async (_req, res) => {
-    try {
-      const providers = await storage.getAllSsoProviders();
-      res.json(providers);
-    } catch (error: any) {
-      res.status(500).json({ message: error.message });
-    }
-  });
-
-  app.get("/api/sso/providers/enabled", async (_req, res) => {
-    try {
-      const providers = await storage.getEnabledSsoProviders();
-      // Return only public info for login page
-      const publicProviders = providers.map(p => ({
-        id: p.id,
-        name: p.name,
-        type: p.type,
-      }));
-      res.json(publicProviders);
-    } catch (error: any) {
-      res.status(500).json({ message: error.message });
-    }
-  });
-
-  app.post("/api/sso/providers", async (req, res) => {
-    try {
-      console.log('[SSO Debug] POST /api/sso/providers body:', JSON.stringify(req.body, null, 2));
-      const validatedData = insertSsoProviderSchema.parse(req.body);
-      const provider = await storage.createSsoProvider(validatedData);
-      
-      // Clear OIDC client cache if it's an OIDC provider
-      if (provider.type === 'oidc') {
-        clearOidcClientCache(provider.id);
-      }
-      
-      console.log('[SSO Debug] Provider created successfully:', provider.id);
-      res.status(201).json(provider);
-    } catch (error: any) {
-      console.error('[SSO Debug] Error creating provider:', error);
-      if (error instanceof ZodError) {
-        console.error('[SSO Debug] Validation errors:', error.errors);
-        res.status(400).json({ message: error.message, errors: error.errors });
-      } else {
-        res.status(500).json({ message: error.message });
-      }
-    }
-  });
-
-  app.patch("/api/sso/providers/:id", async (req, res) => {
-    try {
-      const validatedData = insertSsoProviderSchema.partial().parse(req.body);
-      const provider = await storage.updateSsoProvider(req.params.id, validatedData);
-      
-      if (!provider) {
-        return res.status(404).json({ message: "SSO provider not found" });
-      }
-      
-      // Clear OIDC client cache when provider is updated
-      if (provider.type === 'oidc') {
-        clearOidcClientCache(provider.id);
-      }
-      
-      res.json(provider);
-    } catch (error: any) {
-      if (error instanceof ZodError) {
-        res.status(400).json({ message: error.message });
-      } else {
-        res.status(500).json({ message: error.message });
-      }
-    }
-  });
-
-  app.delete("/api/sso/providers/:id", async (req, res) => {
-    try {
-      const provider = await storage.getSsoProvider(req.params.id);
-      if (!provider) {
-        return res.status(404).json({ message: "SSO provider not found" });
-      }
-      
-      await storage.deleteSsoProvider(req.params.id);
-      
-      // Clear OIDC client cache
-      if (provider.type === 'oidc') {
-        clearOidcClientCache(provider.id);
-      }
-      
-      res.status(204).send();
-    } catch (error: any) {
-      res.status(500).json({ message: error.message });
-    }
-  });
-
-  // SAML SSO endpoints
-  app.get("/api/sso/saml/login/:providerId", async (req, res) => {
-    try {
-      const provider = await storage.getSsoProvider(req.params.providerId);
-      
-      if (!provider || !provider.enabled) {
-        return res.status(404).json({ message: "SSO provider not found or disabled" });
-      }
-      
-      if (provider.type !== 'saml') {
-        return res.status(400).json({ message: "Provider is not a SAML provider" });
-      }
-
-      const strategy = createSamlStrategy(provider);
-      
-      passport.use(`saml-${provider.id}`, strategy as any);
-      
-      passport.authenticate(`saml-${provider.id}`, {
-        failureRedirect: '/login?error=sso_failed',
-        session: false,
-      })(req, res);
-    } catch (error: any) {
-      console.error('SAML login error:', error);
-      res.status(500).json({ message: error.message });
-    }
-  });
-
-  app.post("/api/sso/saml/callback/:providerId", async (req, res) => {
-    try {
-      const provider = await storage.getSsoProvider(req.params.providerId);
-      
-      if (!provider || !provider.enabled) {
-        console.log(`[SSO Audit] SAML login failed - provider not found or disabled: ${req.params.providerId}`);
-        return res.status(404).json({ message: "SSO provider not found or disabled" });
-      }
-
-      const strategy = createSamlStrategy(provider);
-      passport.use(`saml-${provider.id}`, strategy as any);
-
-      passport.authenticate(`saml-${provider.id}`, {
-        failureRedirect: '/login?error=sso_failed',
-        session: false,
-      }, (err: any, user: any) => {
-        if (err || !user) {
-          console.log(`[SSO Audit] SAML login failed for provider ${provider.name}: ${err?.message || 'Unknown error'}`);
-          return res.redirect('/login?error=sso_failed');
-        }
-
-        console.log(`[SSO Audit] SAML login successful - Provider: ${provider.name}, User: ${user.email}, Time: ${new Date().toISOString()}`);
-        
-        res.redirect(`/?sso_success=true&email=${encodeURIComponent(user.email)}`);
-      })(req, res);
-    } catch (error: any) {
-      console.error(`[SSO Audit] SAML callback error for provider ${req.params.providerId}:`, error);
-      res.redirect('/login?error=sso_failed');
-    }
-  });
-
-  app.get("/api/sso/saml/metadata/:providerId", async (req, res) => {
-    try {
-      const provider = await storage.getSsoProvider(req.params.providerId);
-      
-      if (!provider || provider.type !== 'saml') {
-        return res.status(404).json({ message: "SAML provider not found" });
-      }
-
-      const metadata = generateSamlMetadata(provider);
-      res.type('application/xml');
-      res.send(metadata);
-    } catch (error: any) {
-      res.status(500).json({ message: error.message });
-    }
-  });
-
-  // Test OIDC Provider endpoints (for development testing)
-  // Handle REPLIT_DEV_DOMAIN which may or may not include https:// prefix
-  const testOidcBaseUrl = process.env.REPLIT_DEV_DOMAIN 
-    ? (process.env.REPLIT_DEV_DOMAIN.startsWith('http') 
-        ? process.env.REPLIT_DEV_DOMAIN 
-        : `https://${process.env.REPLIT_DEV_DOMAIN}`)
-    : 'http://localhost:5000';
-  console.log('[OIDC] Test OIDC base URL:', testOidcBaseUrl);
-
-  // OIDC Discovery endpoint
-  app.get("/test-oidc/.well-known/openid-configuration", (_req, res) => {
-    res.json({
-      issuer: `${testOidcBaseUrl}/test-oidc`,
-      authorization_endpoint: `${testOidcBaseUrl}/test-oidc/authorize`,
-      token_endpoint: `${testOidcBaseUrl}/test-oidc/token`,
-      userinfo_endpoint: `${testOidcBaseUrl}/test-oidc/userinfo`,
-      jwks_uri: `${testOidcBaseUrl}/test-oidc/jwks`,
-      response_types_supported: ["code"],
-      subject_types_supported: ["public"],
-      id_token_signing_alg_values_supported: ["RS256"],
-      scopes_supported: ["openid", "profile", "email"],
-      token_endpoint_auth_methods_supported: ["client_secret_post", "client_secret_basic"],
-      claims_supported: ["sub", "email", "name", "given_name", "family_name"],
-      code_challenge_methods_supported: ["S256"],
-    });
-  });
-
-  // JWKS endpoint (mock keys for testing)
-  app.get("/test-oidc/jwks", (_req, res) => {
-    res.json({ keys: [] });
-  });
-
-  // Test authorization endpoint - simulates login and redirects back
-  app.get("/test-oidc/authorize", (req, res) => {
-    const { redirect_uri, state, code_challenge, nonce } = req.query;
-    
-    if (!redirect_uri) {
-      return res.status(400).json({ error: "missing_redirect_uri" });
-    }
-
-    // Generate a mock authorization code
-    const mockCode = randomBytes(16).toString('hex');
-    
-    // Store the code challenge and nonce for later verification
-    (req.app as any).testOidcCodes = (req.app as any).testOidcCodes || {};
-    (req.app as any).testOidcCodes[mockCode] = {
-      code_challenge,
-      nonce: nonce as string,
-      createdAt: Date.now(),
-    };
-
-    // Redirect back with the code
-    const redirectUrl = new URL(redirect_uri as string);
-    redirectUrl.searchParams.set('code', mockCode);
-    if (state) {
-      redirectUrl.searchParams.set('state', state as string);
-    }
-    
-    res.redirect(redirectUrl.toString());
-  });
-
-  // Test token endpoint - use json parsing since urlencoded is already set up globally
-  app.post("/test-oidc/token", (req, res) => {
-    const { code, redirect_uri } = req.body;
-    
-    if (!code) {
-      return res.status(400).json({ error: "invalid_grant", error_description: "Missing code" });
-    }
-
-    // Retrieve stored code data including nonce
-    const codeData = (req.app as any).testOidcCodes?.[code];
-    const nonce = codeData?.nonce;
-
-    // Clean up used code
-    if ((req.app as any).testOidcCodes) {
-      delete (req.app as any).testOidcCodes[code];
-    }
-
-    // Create mock tokens with nonce included
-    const mockAccessToken = randomBytes(32).toString('hex');
-    const idTokenPayload: any = {
-      iss: `${testOidcBaseUrl}/test-oidc`,
-      sub: "test-user-123",
-      aud: "test-client-id",
-      email: "testuser@example.com",
-      name: "Test User",
-      given_name: "Test",
-      family_name: "User",
-      iat: Math.floor(Date.now() / 1000),
-      exp: Math.floor(Date.now() / 1000) + 3600,
-    };
-
-    // Include nonce if it was provided in the authorization request
-    if (nonce) {
-      idTokenPayload.nonce = nonce;
-    }
-
-    const mockIdToken = `eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.${Buffer.from(JSON.stringify(idTokenPayload)).toString('base64url')}.mock-signature`;
-
-    res.json({
-      access_token: mockAccessToken,
-      id_token: mockIdToken,
-      token_type: "Bearer",
-      expires_in: 3600,
-    });
-  });
-
-  // Test userinfo endpoint
-  app.get("/test-oidc/userinfo", (_req, res) => {
-    res.json({
-      sub: "test-user-123",
-      email: "testuser@example.com",
-      name: "Test User",
-      given_name: "Test",
-      family_name: "User",
-    });
-  });
-
-  // OIDC/OAuth SSO endpoints
-  app.get("/api/sso/oidc/login/:providerId", async (req, res) => {
-    try {
-      const provider = await storage.getSsoProvider(req.params.providerId);
-      
-      if (!provider || !provider.enabled) {
-        return res.status(404).json({ message: "SSO provider not found or disabled" });
-      }
-      
-      if (provider.type !== 'oidc') {
-        return res.status(400).json({ message: "Provider is not an OIDC provider" });
-      }
-
-      // Generate random state for CSRF protection
-      const state = randomBytes(16).toString('hex');
-      
-      // Store state in session (you may want to use a proper session store)
-      // For now, we'll pass it through the flow
-      
-      const authUrl = await getAuthorizationUrl(provider, state);
-      res.redirect(authUrl);
-    } catch (error: any) {
-      console.error('OIDC login error:', error);
-      res.status(500).json({ message: error.message });
-    }
-  });
-
-  app.get("/api/sso/oidc/callback/:providerId", async (req: any, res) => {
-    try {
-      const provider = await storage.getSsoProvider(req.params.providerId);
-      
-      if (!provider || !provider.enabled) {
-        console.log(`[SSO Audit] OIDC login failed - provider not found or disabled: ${req.params.providerId}`);
-        return res.status(404).json({ message: "SSO provider not found or disabled" });
-      }
-
-      const { code, state } = req.query;
-      
-      if (!code || !state) {
-        console.log(`[SSO Audit] OIDC login failed for provider ${provider.name}: Missing code or state`);
-        return res.redirect('/login?error=missing_params');
-      }
-
-      // Special handling for test OIDC provider - bypass JWT validation
-      if (provider.id === 'test-oidc-provider') {
-        console.log(`[SSO Audit] Test OIDC provider - creating test user session`);
-        
-        // Create or find the test user
-        let testUser = await storage.getUserByEmail('testuser@example.com');
-        if (!testUser) {
-          // Create the test user with all required fields
-          testUser = await storage.createUser({
-            email: 'testuser@example.com',
-            username: 'testuser_oidc',
-            password: 'test-oidc-user-password-' + randomBytes(16).toString('hex'),
-            firstName: 'Test',
-            lastName: 'User',
-          });
-        }
-
-        // Create session using the app's custom session system
-        const sessionId = await createSession(storage, testUser.id);
-        
-        // Set session cookie
-        res.cookie('sessionId', sessionId, {
-          httpOnly: true,
-          secure: process.env.NODE_ENV === 'production',
-          sameSite: 'lax',
-          maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
-        });
-        
-        console.log(`[SSO Audit] Test OIDC login successful - User: ${testUser.email}, Time: ${new Date().toISOString()}`);
-        res.redirect(`/?sso_success=true&email=${encodeURIComponent(testUser.email)}`);
-        return;
-      }
-
-      const user = await handleOidcCallback(provider, req.query, state as string);
-      
-      console.log(`[SSO Audit] OIDC login successful - Provider: ${provider.name}, User: ${user.email}, Time: ${new Date().toISOString()}`);
-      
-      res.redirect(`/?sso_success=true&email=${encodeURIComponent(user.email)}`);
-    } catch (error: any) {
-      console.error(`[SSO Audit] OIDC callback error for provider ${req.params.providerId}:`, error);
-      res.redirect('/login?error=sso_failed');
     }
   });
 

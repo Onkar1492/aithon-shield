@@ -18,7 +18,8 @@
     "verify:tracker-integration": "tsx cli/verifyTrackerIntegrationRoute.ts",
     "verify:webhook-route": "tsx cli/verifyWebhookRoute.ts",
     "verify:developer-score-cards": "tsx cli/verifyDeveloperScoreCardsRoute.ts",
-    "verify:attack-path-graph": "tsx cli/verifyAttackPathGraphModel.ts"
+    "verify:attack-path-graph": "tsx cli/verifyAttackPathGraphModel.ts",
+    "verify:prod": "npm run check && npm run build"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
